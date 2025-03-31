@@ -323,10 +323,11 @@ Only if Istio sidecar is not present, you can alternatively apply the annotation
 
 | Annotation Key                                                   | Example Values    | Default Value | Description                                                                                                                                                                                                                                                                                                                                 |
 |------------------------------------------------------------------|-------------------|-------------- |---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `prometheus.io/scrape` (mandatory)                               | `true`, `false` | none | Controls whether Prometheus automatically scrapes metrics from this target.                                                                                                                                                                                                                                                             |
+| `prometheus.io/scrape` (mandatory)                               | `true`, `false` | none | Controls whether Prometheus Receiver automatically scrapes metrics from this target.                                                                                                                                                                                                                                                             |
 | `prometheus.io/port` (mandatory)                                 | `8080`, `9100` | none | Specifies the port where the metrics are exposed.                                                                                                                                                                                                                                                                                           |
-| `prometheus.io/path`                                             | `/metrics`, `/custom_metrics` | `/metrics` | Defines the HTTP path where Prometheus can find metrics data.                                                                                                                                                                                                                                                                               |
+| `prometheus.io/path`                                             | `/metrics`, `/custom_metrics` | `/metrics` | Defines the HTTP path where Prometheus Receiver can find metrics data.                                                                                                                                                                                                                                                                               |
 | `prometheus.io/scheme` (only relevant when annotating a Service) | `http`, `https` | If Istio is active, `https` is supported; otherwise, only `http` is available. The default scheme is `http` unless an Istio sidecar is present, denoted by the label `security.istio.io/tlsMode=istio`, in which case `https` becomes the default. | Determines the protocol used for scraping metrics — either HTTPS with mTLS or plain HTTP. |
+| `prometheus.io/param_<name>: <value>`                            | `prometheus.io/param_format: prometheus` | none | Instructs Prometheus Receiver to pass name-value pairs as URL parameters when calling the metrics endpoint |
 
 If you're running the Pod targeted by a Service with Istio, Istio must be able to derive the [appProtocol](https://kubernetes.io/docs/concepts/services-networking/service/#application-protocol) from the Service port definition; otherwise the communication for scraping the metric endpoint cannot be established. You must either prefix the port name with the protocol like in `http-metrics`, or explicitly define the `appProtocol` attribute.
 
@@ -541,6 +542,35 @@ spec:
 ```
 
 With this, the agent starts collecting all Istio metrics from Istio sidecars.
+
+#### Activate Envoy Metrics
+
+If you are using the istio input, you can also collect Envoy metrics. Envoy metrics provide insights into the performance and behavior of the Envoy proxy, such as request rates, latencies, and error counts. These metrics are useful for observability and troubleshooting service mesh traffic.
+For details, see the list of available [Envoy metrics](https://www.envoyproxy.io/docs/envoy/latest/configuration/upstream/cluster_manager/cluster_stats) and [server metrics](https://www.envoyproxy.io/docs/envoy/latest/configuration/observability/statistics).
+
+By default, Envoy metrics collection is disabled.
+
+To activate Envoy metrics, you must enable the `envoyMetrics` section in the MetricPipeline specification under the `istio` input.
+
+  ```yaml
+  apiVersion: telemetry.kyma-project.io/v1alpha1
+  kind: MetricPipeline
+  metadata:
+    name: envoy-metrics
+  spec:
+    input:
+      istio:
+        enabled: true
+        envoyMetrics:
+          enabled: true
+    output:
+      otlp:
+        endpoint:
+          value: https://backend.example.com:4317
+  ```
+
+> [!NOTE]
+> Envoy metrics are only available for the Istio input. Ensure that Istio sidecars are correctly injected into your workloads for Envoy metrics to be available.
 
 ### 8. Deactivate OTLP Metrics
 

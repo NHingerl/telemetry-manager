@@ -19,7 +19,7 @@ func makeInputPipelineServiceConfig(pipeline *telemetryv1alpha1.MetricPipeline) 
 func makeAttributesEnrichmentPipelineServiceConfig(pipelineName string) config.Pipeline {
 	return config.Pipeline{
 		Receivers:  []string{formatRoutingConnectorID(pipelineName)},
-		Processors: []string{"k8sattributes", "transform/resolve-service-name"},
+		Processors: []string{"k8sattributes", "service_enrichment"},
 		Exporters:  []string{formatForwardConnectorID(pipelineName)},
 	}
 }
@@ -67,6 +67,10 @@ func makeInputSourceFiltersIDs(input telemetryv1alpha1.MetricPipelineInput) []st
 
 	if !metricpipelineutils.IsIstioInputEnabled(input) {
 		processors = append(processors, "filter/drop-if-input-source-istio")
+	}
+
+	if !metricpipelineutils.IsIstioInputEnabled(input) || !metricpipelineutils.IsEnvoyMetricsEnabled(input) {
+		processors = append(processors, "filter/drop-envoy-metrics-if-disabled")
 	}
 
 	if !metricpipelineutils.IsOTLPInputEnabled(input) {
