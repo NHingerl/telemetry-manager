@@ -157,10 +157,7 @@ func (aad *AgentApplierDeleter) ApplyResources(ctx context.Context, c client.Cli
 		return fmt.Errorf("failed to reconcile fluent bit tls config secret: %w", err)
 	}
 
-	checksum, err := aad.calculateChecksum(ctx, c)
-	if err != nil {
-		return fmt.Errorf("failed to calculate config checksum: %w", err)
-	}
+	checksum := configchecksum.Calculate([]corev1.ConfigMap{*cm, *luaCm, *sectionsCm, *filesCm, *parsersCm}, []corev1.Secret{*envConfigSecret, *tlsFileConfigSecret})
 
 	daemonSet := aad.makeDaemonSet(aad.daemonSetName.Namespace, checksum)
 	if err := k8sutils.CreateOrUpdateDaemonSet(ctx, c, daemonSet); err != nil {
@@ -276,27 +273,6 @@ func (aad *AgentApplierDeleter) DeleteResources(ctx context.Context, c client.Cl
 }
 
 func (aad *AgentApplierDeleter) makeDaemonSet(namespace string, checksum string) *appsv1.DaemonSet {
-	resourcesFluentBit := corev1.ResourceRequirements{
-		Requests: map[corev1.ResourceName]resource.Quantity{
-			corev1.ResourceCPU:    aad.cpuRequest,
-			corev1.ResourceMemory: aad.memoryRequest,
-		},
-		Limits: map[corev1.ResourceName]resource.Quantity{
-			corev1.ResourceMemory: aad.memoryLimit,
-		},
-	}
-
-	// Set resource requests/limits for directory-size exporter
-	resourcesExporter := corev1.ResourceRequirements{
-		Requests: map[corev1.ResourceName]resource.Quantity{
-			corev1.ResourceCPU:    resource.MustParse("1m"),
-			corev1.ResourceMemory: resource.MustParse("5Mi"),
-		},
-		Limits: map[corev1.ResourceName]resource.Quantity{
-			corev1.ResourceMemory: resource.MustParse("50Mi"),
-		},
-	}
-
 	annotations := make(map[string]string)
 	annotations[commonresources.AnnotationKeyChecksumConfig] = checksum
 	annotations[commonresources.AnnotationKeyIstioExcludeInboundPorts] = fmt.Sprintf("%v,%v", ports.HTTP, ports.ExporterMetrics)
@@ -304,7 +280,7 @@ func (aad *AgentApplierDeleter) makeDaemonSet(namespace string, checksum string)
 	podLabels := Labels()
 	maps.Copy(podLabels, aad.extraPodLabels)
 
-	return &appsv1.DaemonSet{
+	ds := &appsv1.DaemonSet{
 		TypeMeta: metav1.TypeMeta{},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      LogAgentName,
@@ -317,218 +293,178 @@ func (aad *AgentApplierDeleter) makeDaemonSet(namespace string, checksum string)
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      podLabels,
 					Annotations: annotations,
+					Labels:      podLabels,
 				},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: LogAgentName,
-					PriorityClassName:  aad.priorityClassName,
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot:   ptr.To(false),
-						SeccompProfile: &corev1.SeccompProfile{Type: "RuntimeDefault"},
-					},
-					Containers: []corev1.Container{
-						{
-							Name: "fluent-bit",
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: ptr.To(false),
-								Capabilities: &corev1.Capabilities{
-									Add:  []corev1.Capability{"FOWNER"},
-									Drop: []corev1.Capability{"ALL"},
-								},
-								Privileged:             ptr.To(false),
-								ReadOnlyRootFilesystem: ptr.To(true),
-							},
-							Image:           aad.fluentBitImage,
-							ImagePullPolicy: "IfNotPresent",
-							EnvFrom: []corev1.EnvFromSource{
-								{
-									SecretRef: &corev1.SecretEnvSource{
-										LocalObjectReference: corev1.LocalObjectReference{Name: fmt.Sprintf("%s-env", LogAgentName)},
-										Optional:             ptr.To(true),
-									},
-								},
-							},
-							Ports: []corev1.ContainerPort{
-								{
-									Name:          "http",
-									ContainerPort: ports.HTTP,
-									Protocol:      "TCP",
-								},
-							},
-							LivenessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/",
-										Port: intstr.FromString("http"),
-									},
-								},
-							},
-							ReadinessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/api/v1/health",
-										Port: intstr.FromString("http"),
-									},
-								},
-							},
-							Resources: resourcesFluentBit,
-							VolumeMounts: []corev1.VolumeMount{
-								{MountPath: "/fluent-bit/etc", Name: "shared-fluent-bit-config"},
-								{MountPath: "/fluent-bit/etc/fluent-bit.conf", Name: "config", SubPath: "fluent-bit.conf"},
-								{MountPath: "/fluent-bit/etc/dynamic/", Name: "dynamic-config"},
-								{MountPath: "/fluent-bit/etc/dynamic-parsers/", Name: "dynamic-parsers-config"},
-								{MountPath: "/fluent-bit/etc/custom_parsers.conf", Name: "config", SubPath: "custom_parsers.conf"},
-								{MountPath: "/fluent-bit/scripts/filter-script.lua", Name: "luascripts", SubPath: "filter-script.lua"},
-								{MountPath: "/var/log", Name: "varlog", ReadOnly: true},
-								{MountPath: "/data", Name: "varfluentbit"},
-								{MountPath: "/files", Name: "dynamic-files"},
-								{MountPath: "/fluent-bit/etc/output-tls-config/", Name: "output-tls-config", ReadOnly: true},
-							},
-						},
-						{
-							Name:      "exporter",
-							Image:     aad.exporterImage,
-							Resources: resourcesExporter,
-							Args: []string{
-								"--storage-path=/data/flb-storage/",
-								"--metric-name=telemetry_fsbuffer_usage_bytes",
-							},
-							WorkingDir: "",
-							Ports: []corev1.ContainerPort{
-								{
-									Name:          "http-metrics",
-									ContainerPort: ports.ExporterMetrics,
-									Protocol:      "TCP",
-								},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: ptr.To(false),
-								Privileged:               ptr.To(false),
-								ReadOnlyRootFilesystem:   ptr.To(true),
-								Capabilities: &corev1.Capabilities{
-									Drop: []corev1.Capability{"ALL"},
-								},
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{Name: "varfluentbit", MountPath: "/data"},
-							},
-						},
-					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "config",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{Name: LogAgentName},
-								},
-							},
-						},
-						{
-							Name: "luascripts",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{Name: fmt.Sprintf("%s-luascripts", LogAgentName)},
-								},
-							},
-						},
-						{
-							Name: "varlog",
-							VolumeSource: corev1.VolumeSource{
-								HostPath: &corev1.HostPathVolumeSource{Path: "/var/log"},
-							},
-						},
-						{
-							Name: "shared-fluent-bit-config",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
-							},
-						},
-						{
-							Name: "dynamic-config",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{Name: fmt.Sprintf("%s-sections", LogAgentName)},
-									Optional:             ptr.To(true),
-								},
-							},
-						},
-						{
-							Name: "dynamic-parsers-config",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{Name: fmt.Sprintf("%s-parsers", LogAgentName)},
-									Optional:             ptr.To(true),
-								},
-							},
-						},
-						{
-							Name: "dynamic-files",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{Name: fmt.Sprintf("%s-files", LogAgentName)},
-									Optional:             ptr.To(true),
-								},
-							},
-						},
-						{
-							Name: "varfluentbit",
-							VolumeSource: corev1.VolumeSource{
-								HostPath: &corev1.HostPathVolumeSource{Path: fmt.Sprintf("/var/%s", LogAgentName)},
-							},
-						},
-						{
-							Name: "output-tls-config",
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{
-									SecretName: fmt.Sprintf("%s-output-tls-config", LogAgentName),
-								},
-							},
-						},
-					},
-				},
+				Spec: commonresources.MakePodSpec(LogAgentName,
+					commonresources.WithPriorityClass(aad.priorityClassName),
+					commonresources.WithTolerations(commonresources.CriticalDaemonSetTolerations),
+					commonresources.WithVolumes(aad.fluentBitVolumes()),
+					commonresources.WithContainer("fluent-bit", aad.fluentBitImage,
+						commonresources.WithCapabilities("FOWNER"),
+						commonresources.WithEnvVarsFromSecret(fmt.Sprintf("%s-env", LogAgentName)),
+						commonresources.WithRunAsRoot(),
+						commonresources.WithPort("http", ports.HTTP),
+						commonresources.WithProbes(aad.fluentBitLivenessProbe(), aad.fluentBitReadinessProbe()),
+						commonresources.WithResources(aad.fluentBitResources()),
+						commonresources.WithVolumeMounts(aad.fluentBitVolumeMounts()),
+					),
+					commonresources.WithContainer("exporter", aad.exporterImage,
+						commonresources.WithArgs([]string{
+							"--storage-path=/data/flb-storage/",
+							"--metric-name=telemetry_fsbuffer_usage_bytes",
+						}),
+						commonresources.WithPort("http-metrics", ports.ExporterMetrics),
+						commonresources.WithResources(aad.exporterResources()),
+						commonresources.WithVolumeMounts(aad.exporterVolumeMounts()),
+					),
+				),
+			},
+		},
+	}
+
+	return ds
+}
+
+func (aad *AgentApplierDeleter) fluentBitResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: aad.memoryLimit,
+		},
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    aad.cpuRequest,
+			corev1.ResourceMemory: aad.memoryRequest,
+		},
+	}
+}
+
+func (aad *AgentApplierDeleter) exporterResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: map[corev1.ResourceName]resource.Quantity{
+			corev1.ResourceCPU:    resource.MustParse("1m"),
+			corev1.ResourceMemory: resource.MustParse("5Mi"),
+		},
+		Limits: map[corev1.ResourceName]resource.Quantity{
+			corev1.ResourceMemory: resource.MustParse("50Mi"),
+		},
+	}
+}
+
+func (aad *AgentApplierDeleter) fluentBitLivenessProbe() *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/",
+				Port: intstr.FromString("http"),
 			},
 		},
 	}
 }
 
-func (aad *AgentApplierDeleter) calculateChecksum(ctx context.Context, c client.Client) (string, error) {
-	var baseCm corev1.ConfigMap
-	if err := c.Get(ctx, aad.daemonSetName, &baseCm); err != nil {
-		return "", fmt.Errorf("failed to get %s/%s ConfigMap: %w", aad.daemonSetName.Namespace, aad.daemonSetName.Name, err)
+func (aad *AgentApplierDeleter) fluentBitReadinessProbe() *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/api/v1/health",
+				Port: intstr.FromString("http"),
+			},
+		},
 	}
+}
 
-	var parsersCm corev1.ConfigMap
-	if err := c.Get(ctx, aad.parsersConfigMapName, &parsersCm); err != nil {
-		return "", fmt.Errorf("failed to get %s/%s ConfigMap: %w", aad.parsersConfigMapName.Namespace, aad.parsersConfigMapName.Name, err)
+func (aad *AgentApplierDeleter) fluentBitVolumeMounts() []corev1.VolumeMount {
+	return []corev1.VolumeMount{
+		{MountPath: "/fluent-bit/etc", Name: "shared-fluent-bit-config"},
+		{MountPath: "/fluent-bit/etc/fluent-bit.conf", Name: "config", SubPath: "fluent-bit.conf"},
+		{MountPath: "/fluent-bit/etc/dynamic/", Name: "dynamic-config"},
+		{MountPath: "/fluent-bit/etc/dynamic-parsers/", Name: "dynamic-parsers-config"},
+		{MountPath: "/fluent-bit/etc/custom_parsers.conf", Name: "config", SubPath: "custom_parsers.conf"},
+		{MountPath: "/fluent-bit/scripts/filter-script.lua", Name: "luascripts", SubPath: "filter-script.lua"},
+		{MountPath: "/var/log", Name: "varlog", ReadOnly: true},
+		{MountPath: "/data", Name: "varfluentbit"},
+		{MountPath: "/files", Name: "dynamic-files"},
+		{MountPath: "/fluent-bit/etc/output-tls-config/", Name: "output-tls-config", ReadOnly: true},
 	}
+}
 
-	var luaCm corev1.ConfigMap
-	if err := c.Get(ctx, aad.luaConfigMapName, &luaCm); err != nil {
-		return "", fmt.Errorf("failed to get %s/%s ConfigMap: %w", aad.luaConfigMapName.Namespace, aad.luaConfigMapName.Name, err)
+func (aad *AgentApplierDeleter) exporterVolumeMounts() []corev1.VolumeMount {
+	return []corev1.VolumeMount{
+		{Name: "varfluentbit", MountPath: "/data"},
 	}
+}
 
-	var sectionsCm corev1.ConfigMap
-	if err := c.Get(ctx, aad.sectionsConfigMapName, &sectionsCm); err != nil {
-		return "", fmt.Errorf("failed to get %s/%s ConfigMap: %w", aad.sectionsConfigMapName.Namespace, aad.sectionsConfigMapName.Name, err)
+func (aad *AgentApplierDeleter) fluentBitVolumes() []corev1.Volume {
+	return []corev1.Volume{
+		{
+			Name: "config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: LogAgentName},
+				},
+			},
+		},
+		{
+			Name: "luascripts",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: fmt.Sprintf("%s-luascripts", LogAgentName)},
+				},
+			},
+		},
+		{
+			Name: "varlog",
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{Path: "/var/log"},
+			},
+		},
+		{
+			Name: "shared-fluent-bit-config",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+		{
+			Name: "dynamic-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: fmt.Sprintf("%s-sections", LogAgentName)},
+					Optional:             ptr.To(true),
+				},
+			},
+		},
+		{
+			Name: "dynamic-parsers-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: fmt.Sprintf("%s-parsers", LogAgentName)},
+					Optional:             ptr.To(true),
+				},
+			},
+		},
+		{
+			Name: "dynamic-files",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: fmt.Sprintf("%s-files", LogAgentName)},
+					Optional:             ptr.To(true),
+				},
+			},
+		},
+		{
+			Name: "varfluentbit",
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{Path: fmt.Sprintf("/var/%s", LogAgentName)},
+			},
+		},
+		{
+			Name: "output-tls-config",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: fmt.Sprintf("%s-output-tls-config", LogAgentName),
+				},
+			},
+		},
 	}
-
-	var filesCm corev1.ConfigMap
-	if err := c.Get(ctx, aad.filesConfigMapName, &filesCm); err != nil {
-		return "", fmt.Errorf("failed to get %s/%s ConfigMap: %w", aad.filesConfigMapName.Namespace, aad.filesConfigMapName.Name, err)
-	}
-
-	var envSecret corev1.Secret
-	if err := c.Get(ctx, aad.envConfigSecretName, &envSecret); err != nil {
-		return "", fmt.Errorf("failed to get %s/%s Secret: %w", aad.envConfigSecretName.Namespace, aad.envConfigSecretName.Name, err)
-	}
-
-	var tlsSecret corev1.Secret
-	if err := c.Get(ctx, aad.tlsFileConfigSecretName, &tlsSecret); err != nil {
-		return "", fmt.Errorf("failed to get %s/%s Secret: %w", aad.tlsFileConfigSecretName.Namespace, aad.tlsFileConfigSecretName.Name, err)
-	}
-
-	return configchecksum.Calculate([]corev1.ConfigMap{baseCm, parsersCm, luaCm, sectionsCm, filesCm}, []corev1.Secret{envSecret, tlsSecret}), nil
 }
 
 func makeClusterRole(name types.NamespacedName) *rbacv1.ClusterRole {

@@ -11,43 +11,39 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	operatorv1alpha1 "github.com/kyma-project/telemetry-manager/apis/operator/v1alpha1"
+	"github.com/kyma-project/telemetry-manager/internal/otelcollector/config/log/agent"
 	testutils "github.com/kyma-project/telemetry-manager/internal/utils/test"
 	"github.com/kyma-project/telemetry-manager/test/testkit/assert"
 	kitk8s "github.com/kyma-project/telemetry-manager/test/testkit/k8s"
 	kitkyma "github.com/kyma-project/telemetry-manager/test/testkit/kyma"
 	. "github.com/kyma-project/telemetry-manager/test/testkit/matchers/log"
 	"github.com/kyma-project/telemetry-manager/test/testkit/mocks/backend"
-	"github.com/kyma-project/telemetry-manager/test/testkit/mocks/telemetrygen"
+	"github.com/kyma-project/telemetry-manager/test/testkit/mocks/loggen"
 	"github.com/kyma-project/telemetry-manager/test/testkit/periodic"
 	"github.com/kyma-project/telemetry-manager/test/testkit/suite"
 )
 
-var _ = Describe(suite.ID(), Label(suite.LabelLogsOtel, suite.LabelSignalPush, suite.LabelExperimental), Ordered, func() {
-	const (
-		logLabelExactMatchAttributeKey     = "k8s.pod.label.log.test.exact.should.match"
-		logLabelPrefixMatchAttributeKey1   = "k8s.pod.label.log.test.prefix.should.match1"
-		logLabelPrefixMatchAttributeKey2   = "k8s.pod.label.log.test.prefix.should.match2"
-		logLabelShouldNotMatchAttributeKey = "k8s.pod.label.log.test.label.should.not.match"
-	)
-
+var _ = Describe(suite.ID(), Label(suite.LabelLogsOtel, suite.LabelSignalPull, suite.LabelExperimental), Ordered, func() {
 	var (
 		mockNs           = suite.ID()
 		pipelineName     = suite.ID()
 		backendExportURL string
 	)
+
 	makeResources := func() []client.Object {
 		var objs []client.Object
 		objs = append(objs, kitk8s.NewNamespace(mockNs).K8sObject())
 
 		backend := backend.New(mockNs, backend.SignalTypeLogsOtel, backend.WithPersistentHostSecret(suite.IsUpgrade()))
+		logProducer := loggen.New(mockNs)
 		objs = append(objs, backend.K8sObjects()...)
+		objs = append(objs, logProducer.K8sObject())
 		backendExportURL = backend.ExportURL(suite.ProxyClient)
 
 		hostSecretRef := backend.HostSecretRefV1Alpha1()
 		pipelineBuilder := testutils.NewLogPipelineBuilder().
 			WithName(pipelineName).
-			WithApplicationInputDisabled().
+			WithApplicationInput(true).
 			WithOTLPOutput(
 				testutils.OTLPEndpointFromSecret(
 					hostSecretRef.Name,
@@ -59,17 +55,14 @@ var _ = Describe(suite.ID(), Label(suite.LabelLogsOtel, suite.LabelSignalPush, s
 			pipelineBuilder.WithLabels(kitk8s.PersistentLabel)
 		}
 		logPipeline := pipelineBuilder.Build()
-		otlpLogGen := telemetrygen.NewPod(mockNs, telemetrygen.SignalTypeLogs).
-			WithLabel("log.test.exact.should.match", "exact_match").
-			WithLabel("log.test.prefix.should.match1", "prefix_match1").
-			WithLabel("log.test.prefix.should.match2", "prefix_match2").
-			WithLabel("log.test.label.should.not.match", "should_not_match").
-			K8sObject()
-		objs = append(objs, otlpLogGen, &logPipeline)
+
+		objs = append(objs,
+			&logPipeline,
+		)
 		return objs
 	}
 
-	Context("When a logpipeline with OTLP output exists", Ordered, func() {
+	Context("When a log pipeline with runtime input exists", Ordered, func() {
 		BeforeAll(func() {
 			k8sObjects := makeResources()
 
@@ -78,33 +71,13 @@ var _ = Describe(suite.ID(), Label(suite.LabelLogsOtel, suite.LabelSignalPush, s
 			})
 			Expect(kitk8s.CreateObjects(suite.Ctx, suite.K8sClient, k8sObjects...)).Should(Succeed())
 		})
-		It("Should have global log label config", func() {
-			Eventually(func(g Gomega) int {
-				var telemetry operatorv1alpha1.Telemetry
-				err := suite.K8sClient.Get(suite.Ctx, kitkyma.TelemetryName, &telemetry)
-				g.Expect(err).NotTo(HaveOccurred())
-
-				telemetry.Spec.Log = &operatorv1alpha1.LogSpec{
-					Enrichments: &operatorv1alpha1.EnrichmentSpec{
-						Enabled: true,
-						ExtractPodLabels: []operatorv1alpha1.PodLabel{
-							{
-								Key: "log.test.exact.should.match",
-							},
-							{
-								KeyPrefix: "log.test.prefix",
-							},
-						},
-					},
-				}
-				err = suite.K8sClient.Update(suite.Ctx, &telemetry)
-				g.Expect(err).NotTo(HaveOccurred())
-				return len(telemetry.Spec.Log.Enrichments.ExtractPodLabels)
-			}, periodic.EventuallyTimeout, periodic.DefaultInterval).Should(Equal(2))
-		})
 
 		It("Should have a running log gateway deployment", func() {
 			assert.DeploymentReady(suite.Ctx, suite.K8sClient, kitkyma.LogGatewayName)
+		})
+
+		It("Should have a running log agent daemonset", func() {
+			assert.DaemonSetReady(suite.Ctx, suite.K8sClient, kitkyma.LogAgentName)
 		})
 
 		It("Should have a log backend running", func() {
@@ -115,11 +88,29 @@ var _ = Describe(suite.ID(), Label(suite.LabelLogsOtel, suite.LabelSignalPush, s
 			assert.LogPipelineOtelHealthy(suite.Ctx, suite.K8sClient, pipelineName)
 		})
 
-		It("Should deliver telemetrygen logs", func() {
+		It("Should deliver loggen logs", func() {
 			assert.LogsFromNamespaceDelivered(suite.ProxyClient, backendExportURL, mockNs)
 		})
 
-		It("Should have a right labels attached to the logs", func() {
+		It("Ensures logs have expected scope name and scope version", func() {
+			Eventually(func(g Gomega) {
+				resp, err := suite.ProxyClient.Get(backendExportURL)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(resp).To(HaveHTTPStatus(http.StatusOK))
+
+				g.Expect(resp).To(HaveHTTPBody(HaveFlatOtelLogs(
+					ContainElement(SatisfyAll(
+						HaveScopeName(Equal(agent.InstrumentationScopeRuntime)),
+						HaveScopeVersion(SatisfyAny(
+							Equal("main"),
+							MatchRegexp("[0-9]+.[0-9]+.[0-9]+"),
+						)),
+					)),
+				)))
+			}, periodic.TelemetryEventuallyTimeout, periodic.TelemetryInterval).Should(Succeed())
+		})
+
+		It("Should have Observed timestamp in the logs", func() {
 			Consistently(func(g Gomega) {
 				resp, err := suite.ProxyClient.Get(backendExportURL)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -130,12 +121,12 @@ var _ = Describe(suite.ID(), Label(suite.LabelLogsOtel, suite.LabelSignalPush, s
 				g.Expect(err).NotTo(HaveOccurred())
 
 				g.Expect(bodyContent).To(HaveFlatOtelLogs(ContainElement(SatisfyAll(
-					HaveResourceAttributes(HaveKeyWithValue(logLabelExactMatchAttributeKey, "exact_match")),
-					HaveResourceAttributes(HaveKeyWithValue(logLabelPrefixMatchAttributeKey1, "prefix_match1")),
-					HaveResourceAttributes(HaveKeyWithValue(logLabelPrefixMatchAttributeKey2, "prefix_match2")),
-					Not(HaveResourceAttributes(HaveKeyWithValue(logLabelShouldNotMatchAttributeKey, "should_not_match"))),
+					HaveOtelTimestamp(Not(BeEmpty())),
+					HaveObservedTimestamp(Not(BeEmpty())),
+					HaveLogRecordBody(BeEmpty()),
+					HaveAttributes(HaveKey("log.original")),
 				))))
-			}, periodic.TelemetryConsistentlyTimeout, periodic.TelemetryInterval).Should(Succeed())
+			}, periodic.ConsistentlyTimeout, periodic.TelemetryInterval).Should(Succeed())
 		})
 	})
 })

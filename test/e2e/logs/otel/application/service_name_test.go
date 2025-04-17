@@ -3,6 +3,7 @@
 package otel
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 
@@ -11,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/kyma-project/telemetry-manager/internal/otelcollector/config/log/agent"
 	testutils "github.com/kyma-project/telemetry-manager/internal/utils/test"
 	"github.com/kyma-project/telemetry-manager/test/testkit/assert"
 	kitk8s "github.com/kyma-project/telemetry-manager/test/testkit/k8s"
@@ -23,26 +23,32 @@ import (
 	"github.com/kyma-project/telemetry-manager/test/testkit/suite"
 )
 
-var _ = Describe(suite.ID(), Label(suite.LabelLogsOtel, suite.LabelSignalPull, suite.LabelExperimental), Ordered, func() {
+var _ = Describe(suite.ID(), Label(suite.LabelLogsOtel, suite.LabelExperimental), Ordered, func() {
 	var (
-		mockNs           = suite.ID()
-		pipelineName     = suite.ID()
-		backendExportURL string
+		mockNs                = suite.ID()
+		pipelineName          = suite.ID()
+		backendExportURL      string
+		jobName               = "job"
+		podWithNoLabelsName   = "pod-with-no-labels"
+		kubeAppLabelValue     = "kube-workload"
+		appLabelValue         = "workload"
+		podWithBothLabelsName = "pod-with-both-app-labels" // #nosec G101 -- This is a false positive
+
 	)
 
 	makeResources := func() []client.Object {
 		var objs []client.Object
 		objs = append(objs, kitk8s.NewNamespace(mockNs).K8sObject())
 
-		backend := backend.New(mockNs, backend.SignalTypeLogsOtel, backend.WithPersistentHostSecret(suite.IsUpgrade()))
-		logProducer := loggen.New(mockNs)
+		backend := backend.New(mockNs, backend.SignalTypeLogsOtel)
+
 		objs = append(objs, backend.K8sObjects()...)
-		objs = append(objs, logProducer.K8sObject())
 		backendExportURL = backend.ExportURL(suite.ProxyClient)
 
 		hostSecretRef := backend.HostSecretRefV1Alpha1()
 		pipelineBuilder := testutils.NewLogPipelineBuilder().
 			WithName(pipelineName).
+			WithOTLPInput(false).
 			WithApplicationInput(true).
 			WithOTLPOutput(
 				testutils.OTLPEndpointFromSecret(
@@ -51,14 +57,22 @@ var _ = Describe(suite.ID(), Label(suite.LabelLogsOtel, suite.LabelSignalPull, s
 					hostSecretRef.Key,
 				),
 			)
-		if suite.IsUpgrade() {
-			pipelineBuilder.WithLabels(kitk8s.PersistentLabel)
-		}
+
 		logPipeline := pipelineBuilder.Build()
+		objs = append(objs, &logPipeline)
+
+		logs := loggen.New(mockNs)
 
 		objs = append(objs,
-			&logPipeline,
+			kitk8s.NewPod(podWithBothLabelsName, mockNs).
+				WithLabel("app.kubernetes.io/name", kubeAppLabelValue).
+				WithLabel("app", appLabelValue).
+				WithPodSpec(logs.PodSpec()).
+				K8sObject(),
+			kitk8s.NewJob(jobName, mockNs).WithPodSpec(logs.PodSpec()).K8sObject(),
+			kitk8s.NewPod(podWithNoLabelsName, mockNs).WithPodSpec(logs.PodSpec()).K8sObject(),
 		)
+
 		return objs
 	}
 
@@ -92,26 +106,8 @@ var _ = Describe(suite.ID(), Label(suite.LabelLogsOtel, suite.LabelSignalPull, s
 			assert.LogsFromNamespaceDelivered(suite.ProxyClient, backendExportURL, mockNs)
 		})
 
-		It("Ensures logs have expected scope name and scope version", func() {
+		verifyServiceNameAttr := func(givenPodPrefix, expectedServiceName string) {
 			Eventually(func(g Gomega) {
-				resp, err := suite.ProxyClient.Get(backendExportURL)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(resp).To(HaveHTTPStatus(http.StatusOK))
-
-				g.Expect(resp).To(HaveHTTPBody(HaveFlatOtelLogs(
-					ContainElement(SatisfyAll(
-						HaveScopeName(Equal(agent.InstrumentationScopeRuntime)),
-						HaveScopeVersion(SatisfyAny(
-							Equal("main"),
-							MatchRegexp("[0-9]+.[0-9]+.[0-9]+"),
-						)),
-					)),
-				)))
-			}, periodic.TelemetryEventuallyTimeout, periodic.TelemetryInterval).Should(Succeed())
-		})
-
-		It("Should have Observed timestamp in the logs", func() {
-			Consistently(func(g Gomega) {
 				resp, err := suite.ProxyClient.Get(backendExportURL)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(resp).To(HaveHTTPStatus(http.StatusOK))
@@ -119,14 +115,37 @@ var _ = Describe(suite.ID(), Label(suite.LabelLogsOtel, suite.LabelSignalPull, s
 				bodyContent, err := io.ReadAll(resp.Body)
 				defer resp.Body.Close()
 				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(bodyContent).To(HaveFlatOtelLogs(
+					ContainElement(SatisfyAll(
+						HaveResourceAttributes(HaveKeyWithValue("service.name", expectedServiceName)),
+						HaveResourceAttributes(HaveKeyWithValue("k8s.pod.name", ContainSubstring(givenPodPrefix))),
+					)),
+				))
+			}, periodic.TelemetryEventuallyTimeout, periodic.TelemetryInterval).Should(Succeed(), fmt.Sprintf("could not find logs matching service.name: %s, k8s.pod.name: %s.*", expectedServiceName, givenPodPrefix))
 
-				g.Expect(bodyContent).To(HaveFlatOtelLogs(ContainElement(SatisfyAll(
-					HaveOtelTimestamp(Not(BeEmpty())),
-					HaveObservedTimestamp(Not(BeEmpty())),
-					HaveLogRecordBody(Not(BeEmpty())),
-					HaveAttributes(HaveKey("original")),
-				))))
-			}, periodic.ConsistentlyTimeout, periodic.TelemetryInterval).Should(Succeed())
+		}
+		It("Should set undefined service.name attribute to app.kubernetes.io/name label value", func() {
+			verifyServiceNameAttr(podWithBothLabelsName, kubeAppLabelValue)
+		})
+
+		It("Should set undefined service.name attribute to Job name", func() {
+			verifyServiceNameAttr(jobName, jobName)
+		})
+
+		It("Should set undefined service.name attribute to Pod name", func() {
+			verifyServiceNameAttr(podWithNoLabelsName, podWithNoLabelsName)
+		})
+		It("Should have no kyma resource attributes", func() {
+			Eventually(func(g Gomega) {
+				resp, err := suite.ProxyClient.Get(backendExportURL)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(resp).To(HaveHTTPStatus(http.StatusOK))
+				g.Expect(resp).To(HaveHTTPBody(HaveFlatOtelLogs(
+					Not(ContainElement(
+						HaveResourceAttributes(HaveKey(ContainSubstring("kyma"))),
+					)),
+				)))
+			}, periodic.EventuallyTimeout, periodic.TelemetryInterval).Should(Succeed())
 		})
 	})
 })
