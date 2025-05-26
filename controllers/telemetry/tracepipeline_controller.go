@@ -53,10 +53,6 @@ import (
 	"github.com/kyma-project/telemetry-manager/internal/workloadstatus"
 )
 
-const (
-	maxTracePipelines = 3
-)
-
 // TracePipelineController reconciles a TracePipeline object
 type TracePipelineController struct {
 	client.Client
@@ -73,7 +69,7 @@ type TracePipelineControllerConfig struct {
 }
 
 func NewTracePipelineController(client client.Client, reconcileTriggerChan <-chan event.GenericEvent, config TracePipelineControllerConfig) (*TracePipelineController, error) {
-	flowHealthProber, err := prober.NewTracePipelineProber(types.NamespacedName{Name: config.SelfMonitorName, Namespace: config.TelemetryNamespace})
+	flowHealthProber, err := prober.NewOTelTraceGatewayProber(types.NamespacedName{Name: config.SelfMonitorName, Namespace: config.TelemetryNamespace})
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +80,7 @@ func NewTracePipelineController(client client.Client, reconcileTriggerChan <-cha
 			Name:      "telemetry-tracepipeline-lock",
 			Namespace: config.TelemetryNamespace,
 		},
-		maxTracePipelines,
+		MaxPipelineCount,
 	)
 
 	pipelineValidator := &tracepipeline.Validator{

@@ -442,13 +442,37 @@ The record **after** applying the JSON parser:
   "traceID": "123"
 }
 ```
-### Log Time Fields
 
-SAP Cloud Logging service uses a dedicated attribute called **@timestamp** to represent the time of a log record. When processing a log, SAP Cloud Logging first checks whether the record contains a date field with a valid value in either Unix time (integer format) or ISO 8601 format. If the date field is missing or contains an invalid value, SAP Cloud Logging generates the **@timestamp** attribute based on the time the log record was received. This generated timestamp is usually later than the original log time and is not helpful in most scenarios.
+### Further Enrichment
 
-Fluent Bit's HTTP output plugin also uses a date field. This field represents the time when Fluent Bit observed the log and is formatted in ISO 8601 with millisecond precision. The field's value may slightly differ from the original log time because while the original log timestamp may have nanosecond precision, the Fluent Bit date field is limited to millisecond precision.
+Additionally, the agent enriches every log record with the `cluster_identifier` attribute by setting the APIServer URL of the underlying Kubernetes cluster:
 
-Fluent Bit HTTP output uses an additional filter to improve log time precision. The filter allows copying the original **time** attribute to the **@timestamp** field. 
+```json
+{
+   "cluster_identifier": "<APIServer URL>"
+   ...
+}
+```
+
+For LogPipelines that use an HTTP output, the following attributes are enriched for optimized integration with SAP Cloud Logging:
+
+```json
+{
+  "@timestamp": "<value of attribute 'time'>",
+  "date": "<agent time in iso8601>",
+  "kubernetes": {
+    "app_name": "<value of Pod label 'app.kubernetes.io/name' or 'app'>"
+    ...
+  },
+  ...
+}
+```
+
+The enriched timestamp attributes have the following meaning:
+
+- **time**: The time when the container runtime captured the log on `stdout/stderr`, which is very close to the time when the log originated in the application.
+- **date**: The time when the log agent processed the log, which is later than the value in `time`.
+- **@timestamp**: Contains the same value as **time**, optimized for SAP Cloud Logging integration.
 
 ## Operations
 
@@ -486,7 +510,7 @@ You cannot enable the following plugins, because they potentially harm the stabi
 **Symptom**:
 
 - No logs arrive at the backend.
-- In the LogPipeline status, the `TelemetryFlowHealthy` condition has status **AllDataDropped**.
+- In the LogPipeline status, the `TelemetryFlowHealthy` condition has status **AgentAllTelemetryDataDropped**.
 
 **Cause**: Incorrect backend endpoint configuration (for example, using the wrong authentication credentials) or the backend being unreachable.
 
@@ -500,21 +524,21 @@ You cannot enable the following plugins, because they potentially harm the stabi
 **Symptom**:
 
 - The backend is reachable and the connection is properly configured, but some logs are refused.
-- In the LogPipeline status, the `TelemetryFlowHealthy` condition has status **SomeDataDropped**.
+- In the LogPipeline status, the `TelemetryFlowHealthy` condition has status **AgentSomeTelemetryDataDropped**.
 
 **Cause**: It can happen due to a variety of reasons. For example, a possible reason may be that the backend is limiting the ingestion rate, or the backend is refusing logs because they are too large.
 
 **Solution**:
 
 1. Check the `telemetry-fluent-bit` Pods for error logs by calling `kubectl logs -n kyma-system {POD_NAME}`. Also, check your observability backend to investigate potential causes.
-2. If backend is limiting the rate by refusing logs, try the options described in [Agent Buffer Filling Up](#agent-buffer-filling-up).
+2. If the backend is limiting the rate by refusing logs, try the options described in [Agent Buffer Filling Up](#agent-buffer-filling-up).
 3. Otherwise, take the actions appropriate to the cause indicated in the logs.
 
 ### Agent Buffer Filling Up
 
-**Symptom**: In the LogPipeline status, the `TelemetryFlowHealthy` condition has status **BufferFillingUp**.
+**Symptom**: In the LogPipeline status, the `TelemetryFlowHealthy` condition has status **AgentBufferFillingUp**.
 
-**Cause**: The backend export rate is too low compared to the log collection rate.
+**Cause**: The backend ingestion rate is too low compared to the log collection rate.
 
 **Solution**:
 
