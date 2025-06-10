@@ -1,7 +1,6 @@
 package assert
 
 import (
-	"context"
 	"net/http"
 
 	. "github.com/onsi/gomega"
@@ -12,32 +11,42 @@ import (
 	"github.com/kyma-project/telemetry-manager/test/testkit/suite"
 )
 
-func BackendDataEventuallyMatches(ctx context.Context, backend *kitbackend.Backend, httpBodyMatcher types.GomegaMatcher) {
+func BackendDataEventuallyMatches(t TestingT, backend *kitbackend.Backend, httpBodyMatcher types.GomegaMatcher, optionalDescription ...any) {
+	t.Helper()
+
 	queryURL := suite.ProxyClient.ProxyURLForService(backend.Namespace(), backend.Name(), kitbackend.QueryPath, kitbackend.QueryPort)
-	HTTPResponseEventuallyMatches(ctx, queryURL, httpBodyMatcher)
+	HTTPResponseEventuallyMatches(t, queryURL, httpBodyMatcher, optionalDescription...)
 }
 
-func BackendDataConsistentlyMatches(ctx context.Context, backend *kitbackend.Backend, httpBodyMatcher types.GomegaMatcher) {
+func BackendDataConsistentlyMatches(t TestingT, backend *kitbackend.Backend, httpBodyMatcher types.GomegaMatcher, optionalDescription ...any) {
+	t.Helper()
+
 	queryURL := suite.ProxyClient.ProxyURLForService(backend.Namespace(), backend.Name(), kitbackend.QueryPath, kitbackend.QueryPort)
-	HTTPResponseConsistentlyMatches(ctx, queryURL, httpBodyMatcher)
+	HTTPResponseConsistentlyMatches(t, queryURL, httpBodyMatcher, optionalDescription...)
 }
 
-func HTTPResponseEventuallyMatches(ctx context.Context, queryURL string, httpBodyMatcher types.GomegaMatcher) {
+//nolint:dupl // This function is similar to BackendDataEventuallyMatches but uses Eventually instead of Consistently.
+func HTTPResponseEventuallyMatches(t TestingT, queryURL string, httpBodyMatcher types.GomegaMatcher, optionalDescription ...any) {
+	t.Helper()
+
 	Eventually(func(g Gomega) {
-		resp, err := suite.ProxyClient.GetWithContext(ctx, queryURL)
+		resp, err := suite.ProxyClient.GetWithContext(t.Context(), queryURL)
 		g.Expect(err).NotTo(HaveOccurred())
 		defer resp.Body.Close()
 		g.Expect(resp).To(HaveHTTPStatus(http.StatusOK))
-		g.Expect(resp).To(HaveHTTPBody(httpBodyMatcher))
+		g.Expect(resp).To(HaveHTTPBody(httpBodyMatcher), optionalDescription...)
 	}, periodic.EventuallyTimeout, periodic.TelemetryInterval).Should(Succeed())
 }
 
-func HTTPResponseConsistentlyMatches(ctx context.Context, queryURL string, httpBodyMatcher types.GomegaMatcher) {
+//nolint:dupl // This function is similar to HTTPResponseEventuallyMatches but uses Consistently instead of Eventually.
+func HTTPResponseConsistentlyMatches(t TestingT, queryURL string, httpBodyMatcher types.GomegaMatcher, optionalDescription ...any) {
+	t.Helper()
+
 	Consistently(func(g Gomega) {
-		resp, err := suite.ProxyClient.GetWithContext(ctx, queryURL)
+		resp, err := suite.ProxyClient.GetWithContext(t.Context(), queryURL)
 		g.Expect(err).NotTo(HaveOccurred())
 		defer resp.Body.Close()
 		g.Expect(resp).To(HaveHTTPStatus(http.StatusOK))
-		g.Expect(resp).To(HaveHTTPBody(httpBodyMatcher))
+		g.Expect(resp).To(HaveHTTPBody(httpBodyMatcher), optionalDescription...)
 	}, periodic.ConsistentlyTimeout, periodic.TelemetryInterval).Should(Succeed())
 }

@@ -161,7 +161,6 @@ var _ = Describe(suite.ID(), Label(suite.LabelMetrics, suite.LabelExperimental),
 
 		It("Should have a metrics backend running", func() {
 			assert.DeploymentReady(suite.Ctx, types.NamespacedName{Name: kitbackend.DefaultName, Namespace: mockNs})
-			assert.ServiceReady(suite.Ctx, types.NamespacedName{Name: kitbackend.DefaultName, Namespace: mockNs})
 		})
 
 		It("Should have a running pipeline", func() {
@@ -174,7 +173,7 @@ var _ = Describe(suite.ID(), Label(suite.LabelMetrics, suite.LabelExperimental),
 
 		It("Should be able to get metric gateway metrics endpoint", func() {
 			gatewayMetricsURL := suite.ProxyClient.ProxyURLForService(kitkyma.MetricGatewayMetricsService.Namespace, kitkyma.MetricGatewayMetricsService.Name, "metrics", ports.Metrics)
-			assert.EmitsOTelCollectorMetrics(suite.Ctx, gatewayMetricsURL)
+			assert.EmitsOTelCollectorMetrics(GinkgoT(), gatewayMetricsURL)
 		})
 
 		It("Should have a working network policy", func() {

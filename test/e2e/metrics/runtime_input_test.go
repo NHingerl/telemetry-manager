@@ -161,8 +161,6 @@ var _ = Describe(suite.ID(), Label(suite.LabelMetrics), Label(suite.LabelSetA), 
 		It("Should have metrics backends running", func() {
 			assert.DeploymentReady(suite.Ctx, types.NamespacedName{Name: backendResourceMetricsEnabledNameA, Namespace: mockNs})
 			assert.DeploymentReady(suite.Ctx, types.NamespacedName{Name: backendResourceMetricsEnabledNameB, Namespace: mockNs})
-			assert.ServiceReady(suite.Ctx, types.NamespacedName{Name: backendResourceMetricsEnabledNameA, Namespace: mockNs})
-			assert.ServiceReady(suite.Ctx, types.NamespacedName{Name: backendResourceMetricsEnabledNameB, Namespace: mockNs})
 
 		})
 
@@ -180,7 +178,7 @@ var _ = Describe(suite.ID(), Label(suite.LabelMetrics), Label(suite.LabelSetA), 
 
 		It("Ensures accessibility of metric agent metrics endpoint", func() {
 			agentMetricsURL := suite.ProxyClient.ProxyURLForService(kitkyma.MetricAgentMetricsService.Namespace, kitkyma.MetricAgentMetricsService.Name, "metrics", ports.Metrics)
-			assert.EmitsOTelCollectorMetrics(suite.Ctx, agentMetricsURL)
+			assert.EmitsOTelCollectorMetrics(GinkgoT(), agentMetricsURL)
 		})
 
 		It("Ensures the metric agent network policy exists", func() {

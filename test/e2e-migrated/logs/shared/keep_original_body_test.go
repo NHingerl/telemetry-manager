@@ -96,90 +96,90 @@ func TestKeepOriginalBody_OTel(t *testing.T) {
 	assert.DeploymentReady(t.Context(), backendDropOriginal.NamespacedName())
 	assert.DaemonSetReady(t.Context(), kitkyma.LogAgentName)
 
-	assert.OTelLogPipelineHealthy(t.Context(), pipelineKeepOriginalName)
-	assert.OTelLogPipelineHealthy(t.Context(), pipelineDropOriginalName)
+	assert.OTelLogPipelineHealthy(t, pipelineKeepOriginalName)
+	assert.OTelLogPipelineHealthy(t, pipelineDropOriginalName)
 
-	assert.OTelLogsFromNamespaceDelivered(t.Context(), backendDropOriginal, sourceNsDropOriginal)
+	assert.OTelLogsFromNamespaceDelivered(t, backendDropOriginal, sourceNsDropOriginal)
 
-	t.Log("Scenario keepOriginalBody=false with JSON logs and 'message' should have attributes, the 'message' moved into the body, and no attribute 'log.original'")
-	assert.BackendDataEventuallyMatches(t.Context(), backendDropOriginal, HaveFlatLogs(
-		ContainElement(SatisfyAll(
+	assert.BackendDataEventuallyMatches(t, backendDropOriginal,
+		HaveFlatLogs(ContainElement(SatisfyAll(
 			HaveAttributes(HaveKeyWithValue("scenario", "message")),
 			HaveLogBody(Equal("a-body")),
 			HaveAttributes(Not(HaveKey("message"))),
 			HaveAttributes(Not(HaveKey("log.original"))),
-		)),
-	))
+		))),
+		"Scenario keepOriginalBody=false with JSON logs and 'message' should have attributes, the 'message' moved into the body, and no attribute 'log.original'",
+	)
 
-	t.Log("Scenario keepOriginalBody=false with JSON logs and 'msg' should have attributes, the 'msg' moved into the body, and no attribute 'log.original'")
-	assert.BackendDataEventuallyMatches(t.Context(), backendDropOriginal, HaveFlatLogs(
-		ContainElement(SatisfyAll(
+	assert.BackendDataEventuallyMatches(t, backendDropOriginal,
+		HaveFlatLogs(ContainElement(SatisfyAll(
 			HaveAttributes(HaveKeyWithValue("scenario", "msg")),
 			HaveLogBody(Equal("b-body")),
 			HaveAttributes(Not(HaveKey("msg"))),
 			HaveAttributes(Not(HaveKey("log.original"))),
-		)),
-	))
+		))),
+		"Scenario keepOriginalBody=false with JSON logs and 'msg' should have attributes, the 'msg' moved into the body, and no attribute 'log.original'",
+	)
 
-	t.Log("Scenario keepOriginalBody=false with JSON logs should have attributes, the body empty, and no attribute 'log.original'")
-	assert.BackendDataEventuallyMatches(t.Context(), backendDropOriginal, HaveFlatLogs(
-		ContainElement(SatisfyAll(
+	assert.BackendDataEventuallyMatches(t, backendDropOriginal,
+		HaveFlatLogs(ContainElement(SatisfyAll(
 			HaveAttributes(HaveKeyWithValue("scenario", "none")),
 			HaveLogBody(BeEmpty()),
 			HaveAttributes(HaveKeyWithValue("body", "c-body")),
 			HaveAttributes(Not(HaveKey("log.original"))),
-		)),
-	))
+		))),
+		"Scenario keepOriginalBody=false with JSON logs should have attributes, the body empty, and no attribute 'log.original'",
+	)
 
-	t.Log("Scenario keepOriginalBody=false with plain logs should have no attributes, the body filled, and no attribute 'log.original'")
-	assert.BackendDataEventuallyMatches(t.Context(), backendDropOriginal, HaveFlatLogs(
-		ContainElement(SatisfyAll(
+	assert.BackendDataEventuallyMatches(t, backendDropOriginal,
+		HaveFlatLogs(ContainElement(SatisfyAll(
 			HaveLogBody(Equal(stdloggen.DefaultLine)),
 			HaveAttributes(Not(HaveKey("log.original"))),
 			HaveAttributes(Not(HaveKey("scenario"))),
-		)),
-	))
+		))),
+		"Scenario keepOriginalBody=false with plain logs should have no attributes, the body filled, and no attribute 'log.original'",
+	)
 
-	assert.OTelLogsFromNamespaceDelivered(t.Context(), backendKeepOriginal, sourceNsKeepOriginal)
+	assert.OTelLogsFromNamespaceDelivered(t, backendKeepOriginal, sourceNsKeepOriginal)
 
-	t.Log("Scenario keepOriginalBody=true with JSON logs and 'message' should have attributes, the 'message' moved into the body, and have attribute 'log.original'")
-	assert.BackendDataEventuallyMatches(t.Context(), backendKeepOriginal, HaveFlatLogs(
-		ContainElement(SatisfyAll(
+	assert.BackendDataEventuallyMatches(t, backendKeepOriginal,
+		HaveFlatLogs(ContainElement(SatisfyAll(
 			HaveAttributes(HaveKeyWithValue("scenario", "message")),
 			HaveLogBody(Equal("a-body")),
 			HaveAttributes(Not(HaveKey("message"))),
 			HaveAttributes(HaveKey("log.original")),
-		)),
-	))
+		))),
+		"Scenario keepOriginalBody=true with JSON logs and 'message' should have attributes, the 'message' moved into the body, and have attribute 'log.original'",
+	)
 
-	t.Log("Scenario keepOriginalBody=true with JSON logs and 'msg' should have attributes, the 'msg' moved into the body, and have attribute 'log.original'")
-	assert.BackendDataEventuallyMatches(t.Context(), backendKeepOriginal, HaveFlatLogs(
-		ContainElement(SatisfyAll(
+	assert.BackendDataEventuallyMatches(t, backendKeepOriginal,
+		HaveFlatLogs(ContainElement(SatisfyAll(
 			HaveAttributes(HaveKeyWithValue("scenario", "msg")),
 			HaveLogBody(Equal("b-body")),
 			HaveAttributes(Not(HaveKey("msg"))),
 			HaveAttributes(HaveKey("log.original")),
-		)),
-	))
+		))),
+		"Scenario keepOriginalBody=true with JSON logs and 'msg' should have attributes, the 'msg' moved into the body, and have attribute 'log.original'",
+	)
 
-	t.Log("Scenario keepOriginalBody=true with JSON logs should have attributes, the body empty, and have attribute 'log.original'")
-	assert.BackendDataEventuallyMatches(t.Context(), backendKeepOriginal, HaveFlatLogs(
-		ContainElement(SatisfyAll(
+	assert.BackendDataEventuallyMatches(t, backendKeepOriginal,
+		HaveFlatLogs(ContainElement(SatisfyAll(
 			HaveAttributes(HaveKeyWithValue("scenario", "none")),
 			HaveLogBody(BeEmpty()),
 			HaveAttributes(HaveKeyWithValue("body", "c-body")),
 			HaveAttributes(HaveKey("log.original")),
-		)),
-	))
+		))),
+		"Scenario keepOriginalBody=true with JSON logs should have attributes, the body empty, and have attribute 'log.original'",
+	)
 
-	t.Log("Scenario keepOriginalBody=true with plain logs should have no attributes, the body filled, and no attribute 'log.original'")
-	assert.BackendDataEventuallyMatches(t.Context(), backendKeepOriginal, HaveFlatLogs(
-		ContainElement(SatisfyAll(
+	assert.BackendDataEventuallyMatches(t, backendKeepOriginal,
+		HaveFlatLogs(ContainElement(SatisfyAll(
 			HaveLogBody(Equal(stdloggen.DefaultLine)),
 			HaveAttributes(Not(HaveKey("log.original"))),
 			HaveAttributes(Not(HaveKey("scenario"))),
-		)),
-	))
+		))),
+		"Scenario keepOriginalBody=true with plain logs should have no attributes, the body filled, and no attribute 'log.original'",
+	)
 }
 
 func TestKeepOriginalBody_FluentBit(t *testing.T) {
@@ -245,42 +245,42 @@ func TestKeepOriginalBody_FluentBit(t *testing.T) {
 	assert.DeploymentReady(t.Context(), backendDropOriginal.NamespacedName())
 	assert.DaemonSetReady(t.Context(), kitkyma.FluentBitDaemonSetName)
 
-	assert.FluentBitLogPipelineHealthy(t.Context(), pipelineKeepOriginalName)
-	assert.FluentBitLogPipelineHealthy(t.Context(), pipelineDropOriginalName)
+	assert.FluentBitLogPipelineHealthy(t, pipelineKeepOriginalName)
+	assert.FluentBitLogPipelineHealthy(t, pipelineDropOriginalName)
 
-	assert.FluentBitLogsFromNamespaceDelivered(t.Context(), backendDropOriginal, sourceNsDropOriginal)
+	assert.FluentBitLogsFromNamespaceDelivered(t, backendDropOriginal, sourceNsDropOriginal)
 
-	t.Log("Scenario keepOriginalBody=false with JSON logs should parse attributes and not have a body")
-	assert.BackendDataConsistentlyMatches(t.Context(), backendDropOriginal, fluentbit.HaveFlatLogs(
-		ContainElement(SatisfyAll(
+	assert.BackendDataConsistentlyMatches(t, backendDropOriginal,
+		fluentbit.HaveFlatLogs(ContainElement(SatisfyAll(
 			fluentbit.HaveAttributes(HaveKeyWithValue("scenario", "msg")),
 			fluentbit.HaveLogBody(BeEmpty()),
-		)),
-	))
+		))),
+		"Scenario keepOriginalBody=false with JSON logs should parse attributes and not have a body",
+	)
 
-	t.Log("Scenario keepOriginalBody=false with plain logs should not have attributes and have a body")
-	assert.BackendDataEventuallyMatches(t.Context(), backendDropOriginal, fluentbit.HaveFlatLogs(
-		ContainElement(SatisfyAll(
+	assert.BackendDataEventuallyMatches(t, backendDropOriginal,
+		fluentbit.HaveFlatLogs(ContainElement(SatisfyAll(
 			fluentbit.HaveAttributes(Not(HaveKey("scenario"))),
 			fluentbit.HaveLogBody(Equal(stdloggen.DefaultLine)),
-		)),
-	))
+		))),
+		"Scenario keepOriginalBody=false with plain logs should not have attributes and have a body",
+	)
 
-	assert.FluentBitLogsFromNamespaceDelivered(t.Context(), backendKeepOriginal, sourceNsKeepOriginal)
+	assert.FluentBitLogsFromNamespaceDelivered(t, backendKeepOriginal, sourceNsKeepOriginal)
 
-	t.Log("Scenario keepOriginalBody=true with JSON logs should parse attributes and have a body")
-	assert.BackendDataEventuallyMatches(t.Context(), backendKeepOriginal, fluentbit.HaveFlatLogs(
-		ContainElement(SatisfyAll(
+	assert.BackendDataEventuallyMatches(t, backendKeepOriginal,
+		fluentbit.HaveFlatLogs(ContainElement(SatisfyAll(
 			fluentbit.HaveAttributes(HaveKeyWithValue("scenario", "msg")),
 			fluentbit.HaveLogBody(Not(BeEmpty())),
-		)),
-	))
+		))),
+		"Scenario keepOriginalBody=true with JSON logs should parse attributes and have a body",
+	)
 
-	t.Log("Scenario keepOriginalBody=true with plain logs should not have attributes and have a body")
-	assert.BackendDataEventuallyMatches(t.Context(), backendKeepOriginal, fluentbit.HaveFlatLogs(
-		ContainElement(SatisfyAll(
+	assert.BackendDataEventuallyMatches(t, backendKeepOriginal,
+		fluentbit.HaveFlatLogs(ContainElement(SatisfyAll(
 			fluentbit.HaveAttributes(Not(HaveKey("scenario"))),
 			fluentbit.HaveLogBody(Equal(stdloggen.DefaultLine)),
-		)),
-	))
+		))),
+		"Scenario keepOriginalBody=true with plain logs should not have attributes and have a body",
+	)
 }

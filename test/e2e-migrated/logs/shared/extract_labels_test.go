@@ -77,6 +77,7 @@ func TestExtractLabels_OTel(t *testing.T) {
 
 				genNs        = uniquePrefix("gen")
 				pipelineName = uniquePrefix()
+				telemetry    operatorv1alpha1.Telemetry
 			)
 
 			backend := kitbackend.New(backendNs, kitbackend.SignalTypeLogsOTel)
@@ -95,7 +96,6 @@ func TestExtractLabels_OTel(t *testing.T) {
 			}
 
 			Eventually(func(g Gomega) int {
-				var telemetry operatorv1alpha1.Telemetry
 				err := suite.K8sClient.Get(t.Context(), kitkyma.TelemetryName, &telemetry)
 				g.Expect(err).NotTo(HaveOccurred())
 
@@ -124,6 +124,10 @@ func TestExtractLabels_OTel(t *testing.T) {
 
 			t.Cleanup(func() {
 				require.NoError(t, kitk8s.DeleteObjects(context.Background(), resources...)) //nolint:usetesting // Remove ctx from DeleteObjects
+
+				Expect(suite.K8sClient.Get(suite.Ctx, kitkyma.TelemetryName, &telemetry)).Should(Succeed())
+				telemetry.Spec.Enrichments = &operatorv1alpha1.EnrichmentSpec{}
+				require.NoError(t, suite.K8sClient.Update(context.Background(), &telemetry)) //nolint:usetesting // Remove ctx from Update
 			})
 			Expect(kitk8s.CreateObjects(t.Context(), resources...)).Should(Succeed())
 
@@ -133,17 +137,22 @@ func TestExtractLabels_OTel(t *testing.T) {
 
 			assert.DeploymentReady(t.Context(), kitkyma.LogGatewayName)
 			assert.DeploymentReady(t.Context(), backend.NamespacedName())
-			assert.OTelLogPipelineHealthy(t.Context(), pipelineName)
-			assert.OTelLogsFromNamespaceDelivered(t.Context(), backend, genNs)
+			assert.OTelLogPipelineHealthy(t, pipelineName)
+			assert.OTelLogsFromNamespaceDelivered(t, backend, genNs)
 
-			assert.BackendDataConsistentlyMatches(t.Context(), backend, HaveFlatLogs(
-				HaveEach(SatisfyAll(
-					HaveResourceAttributes(HaveKeyWithValue(k8sLabelKeyPrefix+"."+labelKeyExactMatch, labelValueExactMatch)),
-					HaveResourceAttributes(HaveKeyWithValue(k8sLabelKeyPrefix+"."+labelKeyPrefixMatch1, labelValuePrefixMatch1)),
-					HaveResourceAttributes(HaveKeyWithValue(k8sLabelKeyPrefix+"."+labelKeyPrefixMatch2, labelValuePrefixMatch2)),
-					Not(HaveResourceAttributes(HaveKeyWithValue(k8sLabelKeyPrefix+"."+labelKeyShouldNotMatch, labelValueShouldNotMatch))),
+			// Verify that at least one log entry contains the expected labels, rather than requiring all entries to match.
+			// This approach accounts for potential delays in the k8sattributes processor syncing with the API server during startup,
+			// which can result in some logs not being enriched and causing test flakiness.
+			assert.BackendDataEventuallyMatches(t, backend,
+				HaveFlatLogs(ContainElement(
+					HaveResourceAttributes(SatisfyAll(
+						HaveKeyWithValue(k8sLabelKeyPrefix+"."+labelKeyExactMatch, labelValueExactMatch),
+						HaveKeyWithValue(k8sLabelKeyPrefix+"."+labelKeyPrefixMatch1, labelValuePrefixMatch1),
+						HaveKeyWithValue(k8sLabelKeyPrefix+"."+labelKeyPrefixMatch2, labelValuePrefixMatch2),
+						Not(HaveKeyWithValue(k8sLabelKeyPrefix+"."+labelKeyShouldNotMatch, labelValueShouldNotMatch)),
+					)),
 				)),
-			))
+			)
 		})
 	}
 }
@@ -199,19 +208,19 @@ func TestExtractLabels_FluentBit(t *testing.T) {
 	})
 	Expect(kitk8s.CreateObjects(t.Context(), resources...)).Should(Succeed())
 
-	assert.FluentBitLogPipelineHealthy(t.Context(), pipelineNameNotDropped)
-	assert.FluentBitLogPipelineHealthy(t.Context(), pipelineNameDropped)
+	assert.FluentBitLogPipelineHealthy(t, pipelineNameNotDropped)
+	assert.FluentBitLogPipelineHealthy(t, pipelineNameDropped)
 	assert.DaemonSetReady(t.Context(), kitkyma.FluentBitDaemonSetName)
 	assert.DeploymentReady(t.Context(), backendNotDropped.NamespacedName())
 	assert.DeploymentReady(t.Context(), backendDropped.NamespacedName())
 	assert.DeploymentReady(t.Context(), logProducer.NamespacedName())
 
 	// Scenario 1: Labels not dropped
-	assert.FluentBitLogsFromNamespaceDelivered(t.Context(), backendNotDropped, genNs)
-	assert.BackendDataEventuallyMatches(t.Context(), backendNotDropped, fluentbit.HaveFlatLogs(
+	assert.FluentBitLogsFromNamespaceDelivered(t, backendNotDropped, genNs)
+	assert.BackendDataEventuallyMatches(t, backendNotDropped, fluentbit.HaveFlatLogs(
 		HaveEach(fluentbit.HaveKubernetesLabels(HaveKeyWithValue("env", "dev")))),
 	)
-	assert.BackendDataConsistentlyMatches(t.Context(), backendNotDropped, fluentbit.HaveFlatLogs(
+	assert.BackendDataConsistentlyMatches(t, backendNotDropped, fluentbit.HaveFlatLogs(
 		Not(HaveEach(
 			fluentbit.HaveKubernetesAnnotations(Not(BeEmpty())),
 		)),
@@ -219,13 +228,13 @@ func TestExtractLabels_FluentBit(t *testing.T) {
 
 	// Scenario 2: Labels dropped
 
-	assert.FluentBitLogsFromNamespaceDelivered(t.Context(), backendDropped, genNs)
-	assert.BackendDataConsistentlyMatches(t.Context(), backendDropped, fluentbit.HaveFlatLogs(
+	assert.FluentBitLogsFromNamespaceDelivered(t, backendDropped, genNs)
+	assert.BackendDataConsistentlyMatches(t, backendDropped, fluentbit.HaveFlatLogs(
 		HaveEach(Not(
 			fluentbit.HaveKubernetesLabels(HaveKeyWithValue("env", "dev")),
 		)),
 	))
-	assert.BackendDataConsistentlyMatches(t.Context(), backendDropped, fluentbit.HaveFlatLogs(
+	assert.BackendDataConsistentlyMatches(t, backendDropped, fluentbit.HaveFlatLogs(
 		Not(ContainElement(
 			fluentbit.HaveKubernetesAnnotations(Not(BeEmpty())),
 		)),
