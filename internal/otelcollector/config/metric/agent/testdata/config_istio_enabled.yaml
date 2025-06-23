@@ -14,7 +14,7 @@ service:
                 - prometheus/istio
             processors:
                 - memory_limiter
-                - filter/drop-internal-communication
+                - istio_noise_filter
                 - resource/delete-service-name
                 - transform/set-instrumentation-scope-istio
                 - batch
@@ -89,12 +89,10 @@ receivers:
                 enabled: false
             k8s.node.memory.page_faults:
                 enabled: false
-            k8s.node.network.io:
-                enabled: false
-            k8s.node.network.errors:
-                enabled: false
         extra_metadata_labels:
             - k8s.volume.type
+        collect_all_network_interfaces:
+            node: true
     k8s_cluster:
         auth_type: serviceAccount
         collection_interval: 30s
@@ -331,12 +329,7 @@ processors:
         attributes:
             - action: delete
               key: service.name
-    filter/drop-internal-communication:
-        metrics:
-            metric:
-                - IsMatch(name, "istio.*") and HasAttrOnDatapoint("source_workload", "telemetry-metric-agent")
-                - IsMatch(name, "istio.*") and HasAttrOnDatapoint("destination_workload", "telemetry-metric-gateway")
-                - IsMatch(name, "istio.*") and HasAttrOnDatapoint("destination_workload", "telemetry-trace-gateway")
+    istio_noise_filter: {}
     transform/set-instrumentation-scope-runtime:
         error_mode: ignore
         metric_statements:

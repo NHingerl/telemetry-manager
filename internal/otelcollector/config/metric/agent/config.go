@@ -24,13 +24,18 @@ type Receivers struct {
 }
 
 type KubeletStatsReceiver struct {
-	CollectionInterval  string                    `yaml:"collection_interval"`
-	AuthType            string                    `yaml:"auth_type"`
-	Endpoint            string                    `yaml:"endpoint"`
-	InsecureSkipVerify  bool                      `yaml:"insecure_skip_verify"`
-	MetricGroups        []MetricGroupType         `yaml:"metric_groups"`
-	Metrics             KubeletStatsMetricsConfig `yaml:"metrics"`
-	ExtraMetadataLabels []string                  `yaml:"extra_metadata_labels,omitempty"`
+	CollectionInterval          string                         `yaml:"collection_interval"`
+	AuthType                    string                         `yaml:"auth_type"`
+	Endpoint                    string                         `yaml:"endpoint"`
+	InsecureSkipVerify          bool                           `yaml:"insecure_skip_verify"`
+	MetricGroups                []MetricGroupType              `yaml:"metric_groups"`
+	Metrics                     KubeletStatsMetricsConfig      `yaml:"metrics"`
+	ExtraMetadataLabels         []string                       `yaml:"extra_metadata_labels,omitempty"`
+	CollectAllNetworkInterfaces NetworkInterfacesEnablerConfig `yaml:"collect_all_network_interfaces"`
+}
+
+type NetworkInterfacesEnablerConfig struct {
+	NodeMetrics bool `yaml:"node"`
 }
 
 type MetricConfig struct {
@@ -47,8 +52,6 @@ type KubeletStatsMetricsConfig struct {
 	K8sNodeCPUTime               MetricConfig `yaml:"k8s.node.cpu.time"`
 	K8sNodeMemoryMajorPageFaults MetricConfig `yaml:"k8s.node.memory.major_page_faults"`
 	K8sNodeMemoryPageFaults      MetricConfig `yaml:"k8s.node.memory.page_faults"`
-	K8sNodeNetworkIO             MetricConfig `yaml:"k8s.node.network.io"`
-	K8sNodeNetworkErrors         MetricConfig `yaml:"k8s.node.network.errors"`
 }
 
 type MetricGroupType string
@@ -216,13 +219,13 @@ const (
 type Processors struct {
 	config.BaseProcessors `yaml:",inline"`
 
-	DeleteServiceName                 *config.ResourceProcessor  `yaml:"resource/delete-service-name,omitempty"`
-	DropInternalCommunication         *FilterProcessor           `yaml:"filter/drop-internal-communication,omitempty"`
-	SetInstrumentationScopeRuntime    *metric.TransformProcessor `yaml:"transform/set-instrumentation-scope-runtime,omitempty"`
-	SetInstrumentationScopePrometheus *metric.TransformProcessor `yaml:"transform/set-instrumentation-scope-prometheus,omitempty"`
-	SetInstrumentationScopeIstio      *metric.TransformProcessor `yaml:"transform/set-instrumentation-scope-istio,omitempty"`
-	InsertSkipEnrichmentAttribute     *metric.TransformProcessor `yaml:"transform/insert-skip-enrichment-attribute,omitempty"`
-	DropNonPVCVolumesMetrics          *FilterProcessor           `yaml:"filter/drop-non-pvc-volumes-metrics,omitempty"`
+	DeleteServiceName                 *config.ResourceProcessor         `yaml:"resource/delete-service-name,omitempty"`
+	IstioNoiseFilter                  *config.IstioNoiseFilterProcessor `yaml:"istio_noise_filter,omitempty"`
+	SetInstrumentationScopeRuntime    *metric.TransformProcessor        `yaml:"transform/set-instrumentation-scope-runtime,omitempty"`
+	SetInstrumentationScopePrometheus *metric.TransformProcessor        `yaml:"transform/set-instrumentation-scope-prometheus,omitempty"`
+	SetInstrumentationScopeIstio      *metric.TransformProcessor        `yaml:"transform/set-instrumentation-scope-istio,omitempty"`
+	InsertSkipEnrichmentAttribute     *metric.TransformProcessor        `yaml:"transform/insert-skip-enrichment-attribute,omitempty"`
+	DropNonPVCVolumesMetrics          *FilterProcessor                  `yaml:"filter/drop-non-pvc-volumes-metrics,omitempty"`
 }
 
 type Exporters struct {

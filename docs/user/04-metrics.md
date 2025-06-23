@@ -488,6 +488,8 @@ If Node metrics are enabled, the following metrics are collected:
   - `k8s.node.filesystem.usage`
   - `k8s.node.memory.available`
   - `k8s.node.memory.usage`
+  - `k8s.node.network.errors`,
+  - `k8s.node.network.io`,
   - `k8s.node.memory.rss`
   - `k8s.node.memory.working_set`
 
@@ -584,7 +586,7 @@ To activate Envoy metrics, enable the `envoyMetrics` section in the MetricPipeli
 
 By default, `otlp` input is enabled.
 
-To drop the push-based OTLP metrics that are received by the Metric gateway, define a MetricPipeline that has the `otlp` section disabled as an input:
+To drop the push-based OTLP metrics that are received by the metric gateway, define a MetricPipeline that has the `otlp` section disabled as an input:
 
 ```yaml
 apiVersion: telemetry.kyma-project.io/v1alpha1
@@ -724,7 +726,7 @@ To check that the pipeline is running, wait until the status conditions of the M
 ```bash
 kubectl get metricpipeline
 NAME      CONFIGURATION GENERATED   GATEWAY HEALTHY   AGENT HEALTHY   FLOW HEALTHY
-backend   True                      True              True            True        
+backend   True                      True              True            True
 ```
 
 ## Operations
@@ -741,7 +743,7 @@ To detect and fix such situations, check the [pipeline status](./resources/05-me
 
 ## Limitations
 
-- **Throughput**: Assuming an average metric with 20 metric data points and 10 labels, the default metric **gateway** setup has a maximum throughput of 34K metric data points/sec. If more data is sent to the gateway, it is refused. To increase the maximum throughput, manually scale out the gateway by increasing the number of replicas for the Metric gateway.
+- **Throughput**: Assuming an average metric with 20 metric data points and 10 labels, the default metric **gateway** setup has a maximum throughput of 34K metric data points/sec. If more data is sent to the gateway, it is refused. To increase the maximum throughput, manually scale out the gateway by increasing the number of replicas for the metric gateway. See [Module Configuration and Status](https://kyma-project.io/#/telemetry-manager/user/01-manager?id=module-configuration).
   The metric **agent** setup has a maximum throughput of 14K metric data points/sec per instance. If more data must be ingested, it is refused. If a metric data endpoint emits more than 50.000 metric data points per scrape loop, the metric agent refuses all the data.
 - **Load Balancing With Istio**: To ensure availability, the metric gateway runs with multiple instances. If you want to increase the maximum throughput, use manual scaling and enter a higher number of instances.
   By design, the connections to the gateway are long-living connections (because OTLP is based on gRPC and HTTP/2). For optimal scaling of the gateway, the clients or applications must balance the connections across the available instances, which is automatically achieved if you use an Istio sidecar. If your application has no Istio sidecar, the data is always sent to one instance of the gateway.
@@ -824,7 +826,7 @@ kind: NetworkPolicy
 metadata:
   name: allow-traffic-from-agent
 spec:
-  podSelector: 
+  podSelector:
     matchLabels:
       app.kubernetes.io/name: "annotated-workload" # <your workload here>
   ingress:
@@ -859,4 +861,4 @@ spec:
 
 **Cause**: Gateway cannot receive metrics at the given rate.
 
-**Solution**: Manually scale out the gateway by increasing the number of replicas for the Metric gateway. See [Module Configuration and Status](https://kyma-project.io/#/telemetry-manager/user/01-manager?id=module-configuration).
+**Solution**: Manually scale out the gateway by increasing the number of replicas for the metric gateway. See [Module Configuration and Status](https://kyma-project.io/#/telemetry-manager/user/01-manager?id=module-configuration).
