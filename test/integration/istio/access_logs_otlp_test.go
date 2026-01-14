@@ -16,6 +16,7 @@ import (
 	"github.com/kyma-project/telemetry-manager/test/testkit/assert"
 	"github.com/kyma-project/telemetry-manager/test/testkit/istio"
 	kitk8s "github.com/kyma-project/telemetry-manager/test/testkit/k8s"
+	kitk8sobjects "github.com/kyma-project/telemetry-manager/test/testkit/k8s/objects"
 	kitkyma "github.com/kyma-project/telemetry-manager/test/testkit/kyma"
 	. "github.com/kyma-project/telemetry-manager/test/testkit/matchers/log"
 	kitbackend "github.com/kyma-project/telemetry-manager/test/testkit/mocks/backend"
@@ -39,8 +40,8 @@ func TestAccessLogsOTLP(t *testing.T) {
 
 	logPipeline := testutils.NewLogPipelineBuilder().
 		WithName(pipelineName).
-		WithApplicationInput(false).
-		WithOTLPOutput(testutils.OTLPEndpoint(logBackend.Endpoint())).
+		WithRuntimeInput(false).
+		WithOTLPOutput(testutils.OTLPEndpoint(logBackend.EndpointHTTP())).
 		Build()
 
 	sampleApp := prommetricgen.New(permissiveNs, prommetricgen.WithName(uniquePrefix("otlp-access-log-emitter")))
@@ -48,11 +49,11 @@ func TestAccessLogsOTLP(t *testing.T) {
 
 	tracePipeline := testutils.NewTracePipelineBuilder().
 		WithName(pipelineName).
-		WithOTLPOutput(testutils.OTLPEndpoint(traceBackend.Endpoint())).
+		WithOTLPOutput(testutils.OTLPEndpoint(traceBackend.EndpointHTTP())).
 		Build()
 
 	resources := []client.Object{
-		kitk8s.NewNamespace(backendNs, kitk8s.WithIstioInjection()).K8sObject(),
+		kitk8sobjects.NewNamespace(backendNs, kitk8sobjects.WithIstioInjection()).K8sObject(),
 		&logPipeline,
 		&tracePipeline,
 		sampleApp.Pod().K8sObject(),
@@ -61,7 +62,6 @@ func TestAccessLogsOTLP(t *testing.T) {
 	resources = append(resources, traceBackend.K8sObjects()...)
 
 	t.Cleanup(func() {
-		require.NoError(t, kitk8s.DeleteObjects(resources...))
 		resetAccessLogsProvider(t) // TODO: Remove this once the bug https://github.com/kyma-project/istio/issues/1481 fixed
 	})
 	require.NoError(t, kitk8s.CreateObjects(t, resources...))

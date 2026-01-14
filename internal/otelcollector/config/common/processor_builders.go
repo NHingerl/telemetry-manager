@@ -3,15 +3,15 @@ package common
 import (
 	"fmt"
 
-	operatorv1alpha1 "github.com/kyma-project/telemetry-manager/apis/operator/v1alpha1"
-	telemetryv1alpha1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1alpha1"
+	operatorv1beta1 "github.com/kyma-project/telemetry-manager/apis/operator/v1beta1"
+	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 )
 
 // =============================================================================
 // KUBERNETES ATTRIBUTES PROCESSOR BUILDERS
 // =============================================================================
 
-func K8sAttributesProcessorConfig(enrichments *operatorv1alpha1.EnrichmentSpec) *K8sAttributesProcessor {
+func K8sAttributesProcessorConfig(enrichments *operatorv1beta1.EnrichmentSpec) *K8sAttributesProcessor {
 	k8sAttributes := []string{
 		"k8s.pod.name",
 		"k8s.node.name",
@@ -81,7 +81,7 @@ func extractLabels() []ExtractLabel {
 	}
 }
 
-func extractPodLabels(enrichments *operatorv1alpha1.EnrichmentSpec) []ExtractLabel {
+func extractPodLabels(enrichments *operatorv1beta1.EnrichmentSpec) []ExtractLabel {
 	extractPodLabels := make([]ExtractLabel, 0)
 
 	if enrichments != nil && len(enrichments.ExtractPodLabels) > 0 {
@@ -107,58 +107,6 @@ func extractPodLabels(enrichments *operatorv1alpha1.EnrichmentSpec) []ExtractLab
 // =============================================================================
 // RESOURCE PROCESSOR BUILDERS
 // =============================================================================
-
-// InsertClusterAttributesProcessorConfig creates a resource processor that inserts cluster attributes
-func InsertClusterAttributesProcessorConfig(clusterName, clusterUID, cloudProvider string) *ResourceProcessor {
-	if cloudProvider != "" {
-		return &ResourceProcessor{
-			Attributes: []AttributeAction{
-				{
-					Action: AttributeActionInsert,
-					Key:    "k8s.cluster.name",
-					Value:  clusterName,
-				},
-				{
-					Action: AttributeActionInsert,
-					Key:    "k8s.cluster.uid",
-					Value:  clusterUID,
-				},
-				{
-					Action: AttributeActionInsert,
-					Key:    "cloud.provider",
-					Value:  cloudProvider,
-				},
-			},
-		}
-	}
-
-	return &ResourceProcessor{
-		Attributes: []AttributeAction{
-			{
-				Action: AttributeActionInsert,
-				Key:    "k8s.cluster.name",
-				Value:  clusterName,
-			},
-			{
-				Action: AttributeActionInsert,
-				Key:    "k8s.cluster.uid",
-				Value:  clusterUID,
-			},
-		},
-	}
-}
-
-// DropKymaAttributesProcessorConfig creates a resource processor that drops Kyma attributes
-func DropKymaAttributesProcessorConfig() *ResourceProcessor {
-	return &ResourceProcessor{
-		Attributes: []AttributeAction{
-			{
-				Action:       AttributeActionDelete,
-				RegexPattern: "kyma.*",
-			},
-		},
-	}
-}
 
 // ResolveServiceNameConfig creates a service enrichment processor configuration
 func ResolveServiceNameConfig() *ServiceEnrichmentProcessor {
@@ -198,7 +146,7 @@ func TraceFilterProcessorConfig(traces FilterProcessorTraces) *FilterProcessor {
 	}
 }
 
-func FilterSpecsToLogFilterProcessorConfig(specs []telemetryv1alpha1.FilterSpec) *FilterProcessor {
+func FilterSpecsToLogFilterProcessorConfig(specs []telemetryv1beta1.FilterSpec) *FilterProcessor {
 	var mergedConditions []string
 	for _, spec := range specs {
 		mergedConditions = append(mergedConditions, spec.Conditions...)
@@ -213,7 +161,7 @@ func FilterSpecsToLogFilterProcessorConfig(specs []telemetryv1alpha1.FilterSpec)
 	}
 }
 
-func FilterSpecsToMetricFilterProcessorConfig(specs []telemetryv1alpha1.FilterSpec) *FilterProcessor {
+func FilterSpecsToMetricFilterProcessorConfig(specs []telemetryv1beta1.FilterSpec) *FilterProcessor {
 	var mergedConditions []string
 	for _, spec := range specs {
 		mergedConditions = append(mergedConditions, spec.Conditions...)
@@ -228,7 +176,7 @@ func FilterSpecsToMetricFilterProcessorConfig(specs []telemetryv1alpha1.FilterSp
 	}
 }
 
-func FilterSpecsToTraceFilterProcessorConfig(specs []telemetryv1alpha1.FilterSpec) *FilterProcessor {
+func FilterSpecsToTraceFilterProcessorConfig(specs []telemetryv1beta1.FilterSpec) *FilterProcessor {
 	var mergedConditions []string
 	for _, spec := range specs {
 		mergedConditions = append(mergedConditions, spec.Conditions...)
@@ -273,7 +221,7 @@ func TraceTransformProcessorConfig(statements []TransformProcessorStatements) *T
 }
 
 // TransformSpecsToProcessorStatements converts transform specs to processor statements
-func TransformSpecsToProcessorStatements(specs []telemetryv1alpha1.TransformSpec) []TransformProcessorStatements {
+func TransformSpecsToProcessorStatements(specs []telemetryv1beta1.TransformSpec) []TransformProcessorStatements {
 	result := make([]TransformProcessorStatements, 0, len(specs))
 	for _, spec := range specs {
 		result = append(result, TransformProcessorStatements{
@@ -283,6 +231,37 @@ func TransformSpecsToProcessorStatements(specs []telemetryv1alpha1.TransformSpec
 	}
 
 	return result
+}
+
+type ClusterOptions struct {
+	ClusterName   string
+	ClusterUID    string
+	CloudProvider string
+}
+
+// InsertClusterAttributesProcessorStatements creates processor statements for the transform processor that inserts cluster attributes
+func InsertClusterAttributesProcessorStatements(cluster ClusterOptions) []TransformProcessorStatements {
+	statements := []string{
+		setIfNilOrEmptyStatement("k8s.cluster.name", cluster.ClusterName),
+		setIfNilOrEmptyStatement("k8s.cluster.uid", cluster.ClusterUID),
+	}
+
+	if cluster.CloudProvider != "" {
+		statements = append(statements, setIfNilOrEmptyStatement("cloud.provider", cluster.CloudProvider))
+	}
+
+	return []TransformProcessorStatements{{
+		Statements: statements,
+	}}
+}
+
+// DropKymaAttributesProcessorStatements creates processor statements for the transform processor that drops Kyma attributes
+func DropKymaAttributesProcessorStatements() []TransformProcessorStatements {
+	return []TransformProcessorStatements{{
+		Statements: []string{
+			"delete_matching_keys(resource.attributes, \"kyma.*\")",
+		},
+	}}
 }
 
 // InstrumentationScopeProcessorConfig creates a transform processor for instrumentation scope
@@ -301,20 +280,14 @@ func InstrumentationScopeProcessorConfig(instrumentationScopeVersion string, inp
 	return MetricTransformProcessorConfig(transformProcessorStatements)
 }
 
-// KymaInputNameProcessorConfig creates a transform processor that sets the custom `kyma.input.name` attribute
+// KymaInputNameProcessorStatements creates processor statements for the transform processor that sets the custom `kyma.input.name` attribute
 // the attribute is mainly used for routing purpose in the metric agent configuration
-func KymaInputNameProcessorConfig(inputSource InputSourceType) *ResourceProcessor {
-	resourceProcessor := ResourceProcessor{
-		Attributes: []AttributeAction{
-			{
-				Action: AttributeActionInsert,
-				Key:    KymaInputNameAttribute,
-				Value:  string(inputSource),
-			},
+func KymaInputNameProcessorStatements(inputSource InputSourceType) []TransformProcessorStatements {
+	return []TransformProcessorStatements{{
+		Statements: []string{
+			fmt.Sprintf("set(resource.attributes[\"%s\"], \"%s\")", KymaInputNameAttribute, string(inputSource)),
 		},
-	}
-
-	return &resourceProcessor
+	}}
 }
 
 func instrumentationStatement(inputSource InputSourceType, instrumentationScopeVersion string) []string {
@@ -322,4 +295,11 @@ func instrumentationStatement(inputSource InputSourceType, instrumentationScopeV
 		fmt.Sprintf("set(scope.version, \"%s\") where scope.name == \"%s\"", instrumentationScopeVersion, upstreamInstrumentationScopeName[inputSource]),
 		fmt.Sprintf("set(scope.name, \"%s\") where scope.name == \"%s\"", InstrumentationScope[inputSource], upstreamInstrumentationScopeName[inputSource]),
 	}
+}
+
+func setIfNilOrEmptyStatement(attributeKey, attributeValue string) string {
+	return JoinWithWhere(
+		fmt.Sprintf("set(resource.attributes[\"%s\"], \"%s\")", attributeKey, attributeValue),
+		ResourceAttributeIsNilOrEmpty(attributeKey),
+	)
 }

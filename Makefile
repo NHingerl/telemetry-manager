@@ -49,6 +49,7 @@ $(TOOLS_BIN_NAMES): $(TOOLS_BIN_DIR) $(TOOLS_MOD_DIR)/go.mod
 	cd $(TOOLS_MOD_DIR) && go build -o $@ -trimpath $(filter $(filter %/$(notdir $@),$(TOOLS_PKG_NAMES_CLEAN))%,$(TOOLS_PKG_NAMES))
 
 CONTROLLER_GEN   := $(TOOLS_BIN_DIR)/controller-gen
+CONVERSION_GEN   := $(TOOLS_BIN_DIR)/conversion-gen
 GOLANGCI_LINT    := $(TOOLS_BIN_DIR)/golangci-lint
 GO_TEST_COVERAGE := $(TOOLS_BIN_DIR)/go-test-coverage
 GOTESTSUM        := $(TOOLS_BIN_DIR)/gotestsum
@@ -58,7 +59,6 @@ YQ               := $(TOOLS_BIN_DIR)/yq
 JQ               := $(TOOLS_BIN_DIR)/gojq
 YAMLFMT          := $(TOOLS_BIN_DIR)/yamlfmt
 STRINGER         := $(TOOLS_BIN_DIR)/stringer
-WSL              := $(TOOLS_BIN_DIR)/wsl
 K3D              := $(TOOLS_BIN_DIR)/k3d
 PROMLINTER       := $(TOOLS_BIN_DIR)/promlinter
 GOMPLATE         := $(TOOLS_BIN_DIR)/gomplate
@@ -97,6 +97,9 @@ MODULE_NAMES := $(notdir $(GO_MODULE_DIRS))
 # All standard and fix lint targets
 LINT_TARGETS := $(addprefix lint-,$(MODULE_NAMES))
 LINT_FIX_TARGETS := $(addprefix lint-fix-,$(MODULE_NAMES))
+
+# All build targets for dependencies
+BUILD_DEPENDENCY_TARGETS := $(addprefix build-,$(MODULE_NAMES))
 
 ##@ Code Quality
 
@@ -149,8 +152,9 @@ lint-fix: lint-fix-manager $(LINT_FIX_TARGETS) ## Run linting checks with automa
 ##@ Code Generation
 
 .PHONY: generate
-generate: $(CONTROLLER_GEN) $(MOCKERY) $(STRINGER) $(YQ) $(YAMLFMT) $(POPULATE_IMAGES) ## Generate code including DeepCopy, DeepCopyInto, DeepCopyObject methods and update helm values
+generate: $(CONTROLLER_GEN) $(MOCKERY) $(STRINGER) $(YQ) $(YAMLFMT) $(POPULATE_IMAGES) $(CONVERSION_GEN) ## Generate code including DeepCopy, DeepCopyInto, DeepCopyObject methods and update helm values
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(CONVERSION_GEN) --go-header-file ./hack/boilerplate.go.txt --output-file zz_generated.conversion.go ./apis/telemetry/v1alpha1 ./apis/telemetry/v1beta1
 	$(MOCKERY)
 	$(STRINGER) --type Mode internal/utils/logpipeline/logpipeline.go
 	$(STRINGER) --type FeatureFlag internal/featureflags/featureflags.go
@@ -169,10 +173,8 @@ generate: $(CONTROLLER_GEN) $(MOCKERY) $(STRINGER) $(YQ) $(YAMLFMT) $(POPULATE_I
 	$(POPULATE_IMAGES)
 
 .PHONY: manifests
-manifests: $(CONTROLLER_GEN) $(YQ) $(YAMLFMT) ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition for v1alpha1
-	$(CONTROLLER_GEN) rbac:roleName=manager-role webhook paths="./..."
-	$(CONTROLLER_GEN) crd paths="./apis/operator/v1alpha1" output:crd:artifacts:config=helm/charts/default/templates
-	$(CONTROLLER_GEN) crd paths="./apis/telemetry/v1alpha1" output:crd:artifacts:config=helm/charts/default/templates
+manifests: $(CONTROLLER_GEN) $(YQ) $(YAMLFMT) ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition for v1alpha1 and v1beta1
+	$(CONTROLLER_GEN) rbac:roleName=manager-role webhook crd paths="./..." output:crd:artifacts:config=helm/charts/default/templates
 	$(YAMLFMT)
 
 .PHONY: manifests-experimental
@@ -193,6 +195,7 @@ check-clean: generate manifests manifests-experimental crd-docs-gen generate-e2e
 	@git diff --name-only --exit-code || (echo "Generated files are not up-to-date. Please run 'make generate manifests manifests-experimental crd-docs-gen generate-e2e-targets' to update them." && exit 1)
 
 ##@ Testing
+
 .PHONY: test
 test: manifests generate fmt vet tidy ## Run all unit tests
 	go test ./test/testkit/matchers/...
@@ -205,11 +208,49 @@ check-coverage: $(GO_TEST_COVERAGE) ## Check test coverage against thresholds
 	go test $$(go list ./... | grep -v /test/) -short -coverprofile=cover.out -covermode=atomic -coverpkg=./...
 	$(GO_TEST_COVERAGE) --config=./.testcoverage.yml
 
+.PHONY: update-golden-files
+update-golden-files: ## Update all golden files for config builder tests
+	@echo "Updating golden files for otelcollector config builder tests..."
+	@go test ./internal/otelcollector/config/tracegateway -v -run TestBuildConfig -- -update-golden-files || true
+	@go test ./internal/otelcollector/config/metricgateway -v -run TestBuildConfig -- -update-golden-files || true
+	@go test ./internal/otelcollector/config/loggateway -v -run TestBuildConfig -- -update-golden-files || true
+	@go test ./internal/otelcollector/config/logagent -v -run TestBuildConfig -- -update-golden-files || true
+	@go test ./internal/otelcollector/config/metricagent -v -run TestBuildConfig -- -update-golden-files || true
+	@echo "Updating golden files for selfmonitor tests..."
+	@go test ./internal/selfmonitor/config -v -run TestMakeConfigMarshalling -- -update-golden-files || true
+	@go test ./internal/selfmonitor/config -v -run TestMakeRules -- -update-golden-files || true
+	@echo "Updating golden files for resource tests..."
+	@go test ./internal/resources/fluentbit -v -run TestAgent_ApplyResources -- -update-golden-files || true
+	@go test ./internal/resources/otelcollector -v -run TestAgent_ApplyResources -- -update-golden-files || true
+	@go test ./internal/resources/otelcollector -v -run TestGateway_ApplyResources -- -update-golden-files || true
+	@go test ./internal/resources/selfmonitor -v -run TestApplySelfMonitorResources -- -update-golden-files || true
+	@echo "All golden files updated successfully"
+
 ##@ Build
 
 .PHONY: build
-build: generate fmt vet tidy ## Build manager binary
-	go build -o bin/manager main.go
+build: build-manager fmt vet tidy ## Format, vet and build the manager
+
+.PHONY: build-for-codeql
+build-for-codeql: build-manager-no-generate build-dependencies ## Build the manager and the custom tools in dependencies
+
+.PHONY: build-manager
+build-manager: generate
+	go build -o $(ARTIFACTS)/manager .
+
+.PHONY: build-manager-no-generate
+build-manager-no-generate:
+	go build -o $(ARTIFACTS)/manager .
+
+# Pattern rule for building each dependency module
+$(BUILD_DEPENDENCY_TARGETS):
+	@modname=$(@:build-%=%); \
+	echo "Building $$modname..."; \
+	cd $(DEPENDENCIES_DIR)/$$modname && pwd && go build -o $(ARTIFACTS)/$$modname .
+
+.PHONY: build-dependencies $(BUILD_DEPENDENCY_TARGETS)
+build-dependencies: $(BUILD_DEPENDENCY_TARGETS) ## Build custom tools in dependencies
+
 
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager
@@ -250,6 +291,7 @@ tls.crt: tls.key
 gen-webhook-cert: tls.key tls.crt ## Generate TLS certificates for webhook development
 
 ##@ Deployment
+
 ifndef ignore-not-found
   ignore-not-found = false
 endif
@@ -324,6 +366,20 @@ deploy-experimental-no-fips: manifests-experimental $(HELM) ## Deploy telemetry 
 		--namespace kyma-system \
 	| kubectl apply -f -
 
+.PHONY: deploy-custom-labels-annotations-no-fips
+deploy-custom-labels-annotations-no-fips: manifests-experimental $(HELM) ## Deploy telemetry manager with experimental features, custom labels and annotations, and FIPS mode disabled
+	$(HELM) template telemetry helm \
+		--set experimental.enabled=true \
+		--set default.enabled=false \
+		--set nameOverride=telemetry \
+		--set manager.container.image.repository=${MANAGER_IMAGE} \
+		--set manager.container.image.pullPolicy="Always" \
+		--set manager.container.env.operateInFipsMode=false \
+		--set additionalMetadata.labels.my-meta-label="foo" \
+		--set additionalMetadata.annotations.my-meta-annotation="bar" \
+		--namespace kyma-system \
+	| kubectl apply -f -
+
 .PHONY: undeploy-experimental
 undeploy-experimental: $(HELM) ## Undeploy telemetry manager with experimental features
 	$(HELM) template telemetry helm \
@@ -332,8 +388,9 @@ undeploy-experimental: $(HELM) ## Undeploy telemetry manager with experimental f
 		--set nameOverride=telemetry \
 		--namespace kyma-system \
 	| kubectl delete --ignore-not-found=$(ignore-not-found) -f -
+
 ##@ Documentation
 
 .PHONY: update-metrics-docs
 update-metrics-docs: $(PROMLINTER) $(GOMPLATE) ## Update internal metrics documentation
-	@metrics=$$(mktemp).json; echo $${metrics}; $(PROMLINTER) list -ojson . > $${metrics}; $(GOMPLATE) -d telemetry=$${metrics} -f hack/telemetry-internal-metrics.md.tpl > docs/contributor/telemetry-internal-metrics.md
+	@metrics=$$(mktemp).json; echo $${metrics}; $(PROMLINTER) list -ojson internal > $${metrics}; $(GOMPLATE) -d telemetry=$${metrics} -f hack/telemetry-internal-metrics.md.tpl > docs/contributor/telemetry-internal-metrics.md

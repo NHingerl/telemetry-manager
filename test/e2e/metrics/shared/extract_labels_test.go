@@ -1,17 +1,17 @@
 package shared
 
 import (
-	"context"
 	"testing"
 
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	operatorv1alpha1 "github.com/kyma-project/telemetry-manager/apis/operator/v1alpha1"
-	telemetryv1alpha1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1alpha1"
+	operatorv1beta1 "github.com/kyma-project/telemetry-manager/apis/operator/v1beta1"
+	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 	testutils "github.com/kyma-project/telemetry-manager/internal/utils/test"
 	"github.com/kyma-project/telemetry-manager/test/testkit/assert"
 	kitk8s "github.com/kyma-project/telemetry-manager/test/testkit/k8s"
+	kitk8sobjects "github.com/kyma-project/telemetry-manager/test/testkit/k8s/objects"
 	kitkyma "github.com/kyma-project/telemetry-manager/test/testkit/kyma"
 	. "github.com/kyma-project/telemetry-manager/test/testkit/matchers/metric"
 	kitbackend "github.com/kyma-project/telemetry-manager/test/testkit/mocks/backend"
@@ -25,7 +25,7 @@ import (
 func TestExtractLabels(t *testing.T) {
 	tests := []struct {
 		label            string
-		input            telemetryv1alpha1.MetricPipelineInput
+		input            telemetryv1beta1.MetricPipelineInput
 		generatorBuilder func(ns string, labels map[string]string) []client.Object
 	}{
 		{
@@ -75,7 +75,7 @@ func TestExtractLabels(t *testing.T) {
 				pipelineName = uniquePrefix()
 				backendNs    = uniquePrefix("backend")
 				genNs        = uniquePrefix("gen")
-				telemetry    operatorv1alpha1.Telemetry
+				telemetry    operatorv1beta1.Telemetry
 			)
 
 			backend := kitbackend.New(backendNs, kitbackend.SignalTypeMetrics)
@@ -83,7 +83,7 @@ func TestExtractLabels(t *testing.T) {
 			pipeline := testutils.NewMetricPipelineBuilder().
 				WithName(pipelineName).
 				WithInput(tc.input).
-				WithOTLPOutput(testutils.OTLPEndpoint(backend.Endpoint())).
+				WithOTLPOutput(testutils.OTLPEndpoint(backend.EndpointHTTP())).
 				Build()
 
 			genLabels := map[string]string{
@@ -93,10 +93,12 @@ func TestExtractLabels(t *testing.T) {
 				labelKeyShouldNotMatch: labelValueShouldNotMatch,
 			}
 
+			kitk8s.PreserveAndScheduleRestoreOfTelemetryResource(t, kitkyma.TelemetryName)
+
 			Eventually(func(g Gomega) {
 				g.Expect(suite.K8sClient.Get(t.Context(), kitkyma.TelemetryName, &telemetry)).NotTo(HaveOccurred())
-				telemetry.Spec.Enrichments = &operatorv1alpha1.EnrichmentSpec{
-					ExtractPodLabels: []operatorv1alpha1.PodLabel{
+				telemetry.Spec.Enrichments = &operatorv1beta1.EnrichmentSpec{
+					ExtractPodLabels: []operatorv1beta1.PodLabel{
 						{Key: "metric.test.exact.should.match"},
 						{KeyPrefix: "metric.test.prefix"},
 					},
@@ -105,22 +107,13 @@ func TestExtractLabels(t *testing.T) {
 			}, periodic.EventuallyTimeout, periodic.TelemetryInterval).Should(Succeed())
 
 			resources := []client.Object{
-				kitk8s.NewNamespace(backendNs).K8sObject(),
-				kitk8s.NewNamespace(genNs).K8sObject(),
+				kitk8sobjects.NewNamespace(backendNs).K8sObject(),
+				kitk8sobjects.NewNamespace(genNs).K8sObject(),
 				&pipeline,
 			}
 			resources = append(resources, tc.generatorBuilder(genNs, genLabels)...)
 			resources = append(resources, backend.K8sObjects()...)
 
-			t.Cleanup(func() {
-				Expect(kitk8s.DeleteObjects(resources...)).To(Succeed())
-
-				Eventually(func(g Gomega) {
-					g.Expect(suite.K8sClient.Get(context.Background(), kitkyma.TelemetryName, &telemetry)).To(Succeed()) //nolint:usetesting // Remove ctx from Get
-					telemetry.Spec.Enrichments = &operatorv1alpha1.EnrichmentSpec{}
-					g.Expect(suite.K8sClient.Update(context.Background(), &telemetry)).To(Succeed()) //nolint:usetesting // Remove ctx from Update
-				}, periodic.EventuallyTimeout, periodic.TelemetryInterval).Should(Succeed())
-			})
 			Expect(kitk8s.CreateObjects(t, resources...)).To(Succeed())
 
 			assert.BackendReachable(t, backend)

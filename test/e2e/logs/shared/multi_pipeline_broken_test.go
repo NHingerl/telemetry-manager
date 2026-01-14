@@ -7,11 +7,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	telemetryv1alpha1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1alpha1"
+	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 	"github.com/kyma-project/telemetry-manager/internal/conditions"
 	testutils "github.com/kyma-project/telemetry-manager/internal/utils/test"
 	"github.com/kyma-project/telemetry-manager/test/testkit/assert"
 	kitk8s "github.com/kyma-project/telemetry-manager/test/testkit/k8s"
+	kitk8sobjects "github.com/kyma-project/telemetry-manager/test/testkit/k8s/objects"
 	kitkyma "github.com/kyma-project/telemetry-manager/test/testkit/kyma"
 	kitbackend "github.com/kyma-project/telemetry-manager/test/testkit/mocks/backend"
 	"github.com/kyma-project/telemetry-manager/test/testkit/mocks/stdoutloggen"
@@ -23,14 +24,14 @@ import (
 func TestMultiPipelineBroken_OTel(t *testing.T) {
 	tests := []struct {
 		label               string
-		inputBuilder        func(includeNs string) telemetryv1alpha1.LogPipelineInput
+		inputBuilder        func(includeNs string) telemetryv1beta1.LogPipelineInput
 		logGeneratorBuilder func(ns string) client.Object
 		expectAgent         bool
 	}{
 		{
 			label: suite.LabelLogAgent,
-			inputBuilder: func(includeNs string) telemetryv1alpha1.LogPipelineInput {
-				return testutils.BuildLogPipelineApplicationInput(testutils.ExtIncludeNamespaces(includeNs))
+			inputBuilder: func(includeNs string) telemetryv1beta1.LogPipelineInput {
+				return testutils.BuildLogPipelineRuntimeInput(testutils.IncludeNamespaces(includeNs))
 			},
 			logGeneratorBuilder: func(ns string) client.Object {
 				return stdoutloggen.NewDeployment(ns).K8sObject()
@@ -39,7 +40,7 @@ func TestMultiPipelineBroken_OTel(t *testing.T) {
 		},
 		{
 			label: suite.LabelLogGateway,
-			inputBuilder: func(includeNs string) telemetryv1alpha1.LogPipelineInput {
+			inputBuilder: func(includeNs string) telemetryv1beta1.LogPipelineInput {
 				return testutils.BuildLogPipelineOTLPInput(testutils.IncludeNamespaces(includeNs))
 			},
 			logGeneratorBuilder: func(ns string) client.Object {
@@ -65,7 +66,7 @@ func TestMultiPipelineBroken_OTel(t *testing.T) {
 			healthyPipeline := testutils.NewLogPipelineBuilder().
 				WithName(healthyPipelineName).
 				WithInput(tc.inputBuilder(genNs)).
-				WithOTLPOutput(testutils.OTLPEndpoint(backend.Endpoint())).
+				WithOTLPOutput(testutils.OTLPEndpoint(backend.EndpointHTTP())).
 				Build()
 
 			brokenPipeline := testutils.NewLogPipelineBuilder().
@@ -75,17 +76,14 @@ func TestMultiPipelineBroken_OTel(t *testing.T) {
 				Build()
 
 			resources := []client.Object{
-				kitk8s.NewNamespace(backendNs).K8sObject(),
-				kitk8s.NewNamespace(genNs).K8sObject(),
+				kitk8sobjects.NewNamespace(backendNs).K8sObject(),
+				kitk8sobjects.NewNamespace(genNs).K8sObject(),
 				&healthyPipeline,
 				&brokenPipeline,
 				tc.logGeneratorBuilder(genNs),
 			}
 			resources = append(resources, backend.K8sObjects()...)
 
-			t.Cleanup(func() {
-				Expect(kitk8s.DeleteObjects(resources...)).To(Succeed())
-			})
 			Expect(kitk8s.CreateObjects(t, resources...)).To(Succeed())
 
 			assert.BackendReachable(t, backend)
@@ -122,28 +120,25 @@ func TestMultiPipelineBroken_FluentBit(t *testing.T) {
 
 	healthyPipeline := testutils.NewLogPipelineBuilder().
 		WithName(healthyPipelineName).
-		WithApplicationInput(true).
+		WithRuntimeInput(true).
 		WithHTTPOutput(testutils.HTTPHost(backend.Host()), testutils.HTTPPort(backend.Port())).
 		Build()
 
 	brokenPipeline := testutils.NewLogPipelineBuilder().
 		WithName(brokenPipelineName).
-		WithApplicationInput(true).
+		WithRuntimeInput(true).
 		WithHTTPOutput(testutils.HTTPHostFromSecret("dummy", "dummy", "dummy")). // broken pipeline ref
 		Build()
 
 	resources := []client.Object{
-		kitk8s.NewNamespace(backendNs).K8sObject(),
-		kitk8s.NewNamespace(genNs).K8sObject(),
+		kitk8sobjects.NewNamespace(backendNs).K8sObject(),
+		kitk8sobjects.NewNamespace(genNs).K8sObject(),
 		&healthyPipeline,
 		&brokenPipeline,
 		stdoutloggen.NewDeployment(genNs).K8sObject(),
 	}
 	resources = append(resources, backend.K8sObjects()...)
 
-	t.Cleanup(func() {
-		Expect(kitk8s.DeleteObjects(resources...)).To(Succeed())
-	})
 	Expect(kitk8s.CreateObjects(t, resources...)).To(Succeed())
 
 	assert.BackendReachable(t, backend)

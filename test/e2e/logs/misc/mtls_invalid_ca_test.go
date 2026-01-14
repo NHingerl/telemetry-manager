@@ -7,7 +7,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	operatorv1alpha1 "github.com/kyma-project/telemetry-manager/apis/operator/v1alpha1"
+	operatorv1beta1 "github.com/kyma-project/telemetry-manager/apis/operator/v1beta1"
 	"github.com/kyma-project/telemetry-manager/internal/conditions"
 	testutils "github.com/kyma-project/telemetry-manager/internal/utils/test"
 	"github.com/kyma-project/telemetry-manager/test/testkit/assert"
@@ -18,7 +18,7 @@ import (
 )
 
 func TestMTLSInvalidCA_OTel(t *testing.T) {
-	suite.RegisterTestCase(t, suite.LabelLogsMisc)
+	suite.RegisterTestCase(t, suite.LabelLogsMisc, suite.LabelMTLS)
 
 	var (
 		uniquePrefix = unique.Prefix()
@@ -31,13 +31,13 @@ func TestMTLSInvalidCA_OTel(t *testing.T) {
 		Build()
 	Expect(err).ToNot(HaveOccurred())
 
-	backend := kitbackend.New(backendNs, kitbackend.SignalTypeLogsOTel, kitbackend.WithTLS(*invalidServerCerts))
+	backend := kitbackend.New(backendNs, kitbackend.SignalTypeLogsOTel, kitbackend.WithMTLS(*invalidServerCerts))
 
 	pipeline := testutils.NewLogPipelineBuilder().
 		WithName(pipelineName).
 		WithOTLPOutput(
-			testutils.OTLPEndpoint(backend.Endpoint()),
-			testutils.OTLPClientTLSFromString(
+			testutils.OTLPEndpoint(backend.EndpointHTTPS()),
+			testutils.OTLPClientMTLSFromString(
 				invalidClientCerts.CaCertPem.String(),
 				invalidClientCerts.ClientCertPem.String(),
 				invalidClientCerts.ClientKeyPem.String(),
@@ -48,9 +48,6 @@ func TestMTLSInvalidCA_OTel(t *testing.T) {
 		&pipeline,
 	}
 
-	t.Cleanup(func() {
-		Expect(kitk8s.DeleteObjects(resources...)).To(Succeed())
-	})
 	Expect(kitk8s.CreateObjects(t, resources...)).To(Succeed())
 
 	assert.LogPipelineHasCondition(t, pipelineName, metav1.Condition{
@@ -65,7 +62,7 @@ func TestMTLSInvalidCA_OTel(t *testing.T) {
 		Reason: conditions.ReasonSelfMonConfigNotGenerated,
 	})
 
-	assert.TelemetryHasState(t, operatorv1alpha1.StateWarning)
+	assert.TelemetryHasState(t, operatorv1beta1.StateWarning)
 	assert.TelemetryHasCondition(t, suite.K8sClient, metav1.Condition{
 		Type:   conditions.TypeLogComponentsHealthy,
 		Status: metav1.ConditionFalse,
@@ -87,7 +84,7 @@ func TestMTLSInvalidCA_FluentBit(t *testing.T) {
 		Build()
 	Expect(err).ToNot(HaveOccurred())
 
-	backend := kitbackend.New(backendNs, kitbackend.SignalTypeLogsFluentBit, kitbackend.WithTLS(*invalidServerCerts))
+	backend := kitbackend.New(backendNs, kitbackend.SignalTypeLogsFluentBit, kitbackend.WithMTLS(*invalidServerCerts))
 
 	pipeline := testutils.NewLogPipelineBuilder().
 		WithName(pipelineName).
@@ -105,9 +102,6 @@ func TestMTLSInvalidCA_FluentBit(t *testing.T) {
 		&pipeline,
 	}
 
-	t.Cleanup(func() {
-		Expect(kitk8s.DeleteObjects(resources...)).To(Succeed())
-	})
 	Expect(kitk8s.CreateObjects(t, resources...)).To(Succeed())
 
 	assert.LogPipelineHasCondition(t, pipelineName, metav1.Condition{
@@ -122,7 +116,7 @@ func TestMTLSInvalidCA_FluentBit(t *testing.T) {
 		Reason: conditions.ReasonSelfMonConfigNotGenerated,
 	})
 
-	assert.TelemetryHasState(t, operatorv1alpha1.StateWarning)
+	assert.TelemetryHasState(t, operatorv1beta1.StateWarning)
 	assert.TelemetryHasCondition(t, suite.K8sClient, metav1.Condition{
 		Type:   conditions.TypeLogComponentsHealthy,
 		Status: metav1.ConditionFalse,

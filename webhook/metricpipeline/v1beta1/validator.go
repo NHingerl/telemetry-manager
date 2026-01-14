@@ -19,35 +19,33 @@ type MetricPipelineValidator struct {
 
 var _ webhook.CustomValidator = &MetricPipelineValidator{}
 
-func (v *MetricPipelineValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
-	metricPipeline, ok := obj.(*telemetryv1beta1.MetricPipeline)
-
-	if !ok {
-		return nil, fmt.Errorf("expected a MetricPipeline but got %T", obj)
-	}
-
-	return nil, validateFilterTransform(metricPipeline.Spec.Filters, metricPipeline.Spec.Transforms)
+func (v *MetricPipelineValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	return validate(ctx, obj)
 }
 
-func (v *MetricPipelineValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	metricPipeline, ok := newObj.(*telemetryv1beta1.MetricPipeline)
-
-	if !ok {
-		return nil, fmt.Errorf("expected a MetricPipeline but got %T", newObj)
-	}
-
-	return nil, validateFilterTransform(metricPipeline.Spec.Filters, metricPipeline.Spec.Transforms)
+func (v *MetricPipelineValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	return validate(ctx, newObj)
 }
 
 func (v *MetricPipelineValidator) ValidateDelete(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
 	return nil, nil
 }
 
-func validateFilterTransform(filterSpec []telemetryv1beta1.FilterSpec, transformSpec []telemetryv1beta1.TransformSpec) error {
-	err := webhookutils.ValidateFilterTransform(ottl.SignalTypeMetric, filterSpec, transformSpec)
+func validateFilterTransform(ctx context.Context, filterSpec []telemetryv1beta1.FilterSpec, transformSpec []telemetryv1beta1.TransformSpec) error {
+	err := webhookutils.ValidateFilterTransform(ctx, ottl.SignalTypeMetric, filterSpec, transformSpec)
 	if err != nil {
 		return fmt.Errorf(conditions.MessageForMetricPipeline(conditions.ReasonOTTLSpecInvalid), err.Error())
 	}
 
 	return nil
+}
+
+func validate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	metricPipeline, ok := obj.(*telemetryv1beta1.MetricPipeline)
+
+	if !ok {
+		return nil, fmt.Errorf("expected a MetricPipeline but got %T", obj)
+	}
+
+	return nil, validateFilterTransform(ctx, metricPipeline.Spec.Filters, metricPipeline.Spec.Transforms)
 }

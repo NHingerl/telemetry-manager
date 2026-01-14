@@ -9,10 +9,11 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 
-	telemetryv1alpha1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1alpha1"
+	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 	testutils "github.com/kyma-project/telemetry-manager/internal/utils/test"
 	"github.com/kyma-project/telemetry-manager/test/testkit/assert"
 	kitk8s "github.com/kyma-project/telemetry-manager/test/testkit/k8s"
+	kitk8sobjects "github.com/kyma-project/telemetry-manager/test/testkit/k8s/objects"
 	kitkyma "github.com/kyma-project/telemetry-manager/test/testkit/kyma"
 	"github.com/kyma-project/telemetry-manager/test/testkit/suite"
 	"github.com/kyma-project/telemetry-manager/test/testkit/unique"
@@ -21,7 +22,7 @@ import (
 func TestResources(t *testing.T) {
 	tests := []struct {
 		label     string
-		input     telemetryv1alpha1.MetricPipelineInput
+		input     telemetryv1beta1.MetricPipelineInput
 		resources []assert.Resource
 	}{
 		{
@@ -71,16 +72,13 @@ func TestResources(t *testing.T) {
 				secretName   = uniquePrefix()
 			)
 
-			secret := kitk8s.NewOpaqueSecret(secretName, kitkyma.DefaultNamespaceName, kitk8s.WithStringData(endpointKey, endpointValue))
+			secret := kitk8sobjects.NewOpaqueSecret(secretName, kitkyma.DefaultNamespaceName, kitk8sobjects.WithStringData(endpointKey, endpointValue))
 			pipeline := testutils.NewMetricPipelineBuilder().
 				WithName(pipelineName).
 				WithInput(tc.input).
 				WithOTLPOutput(testutils.OTLPEndpointFromSecret(secret.Name(), secret.Namespace(), endpointKey)).
 				Build()
 
-			t.Cleanup(func() {
-				Expect(kitk8s.DeleteObjects(&pipeline)).To(Succeed())
-			})
 			Expect(kitk8s.CreateObjects(t, &pipeline, secret.K8sObject())).To(Succeed())
 
 			assert.ResourcesExist(t, tc.resources...)

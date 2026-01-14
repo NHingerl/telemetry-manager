@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -14,9 +15,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	telemetryv1alpha1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1alpha1"
+	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 	"github.com/kyma-project/telemetry-manager/internal/conditions"
 	"github.com/kyma-project/telemetry-manager/internal/errortypes"
+	"github.com/kyma-project/telemetry-manager/internal/metrics"
 	"github.com/kyma-project/telemetry-manager/internal/otelcollector/config/common"
 	commonStatusStubs "github.com/kyma-project/telemetry-manager/internal/reconciler/commonstatus/stubs"
 	"github.com/kyma-project/telemetry-manager/internal/reconciler/tracepipeline/mocks"
@@ -95,7 +97,7 @@ func TestGatewayHealthCondition(t *testing.T) {
 func TestSecretReferenceValidation(t *testing.T) {
 	tests := []struct {
 		name                      string
-		setupPipeline             func() telemetryv1alpha1.TracePipeline
+		setupPipeline             func() telemetryv1beta1.TracePipeline
 		setupSecret               func() *corev1.Secret
 		includeSecret             bool
 		secretValidatorError      error
@@ -107,7 +109,7 @@ func TestSecretReferenceValidation(t *testing.T) {
 	}{
 		{
 			name: "referenced secret missing",
-			setupPipeline: func() telemetryv1alpha1.TracePipeline {
+			setupPipeline: func() telemetryv1beta1.TracePipeline {
 				return testutils.NewTracePipelineBuilder().
 					WithOTLPOutput(testutils.OTLPBasicAuthFromSecret("some-secret", "some-namespace", "user", "password")).
 					Build()
@@ -123,7 +125,7 @@ func TestSecretReferenceValidation(t *testing.T) {
 		},
 		{
 			name: "referenced secret exists",
-			setupPipeline: func() telemetryv1alpha1.TracePipeline {
+			setupPipeline: func() telemetryv1beta1.TracePipeline {
 				return testutils.NewTracePipelineBuilder().
 					WithOTLPOutput(testutils.OTLPEndpointFromSecret("existing", "default", "endpoint")).
 					Build()
@@ -412,7 +414,7 @@ func TestTLSCertificateValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pipeline := testutils.NewTracePipelineBuilder().WithOTLPOutput(testutils.OTLPClientTLSFromString("ca", "fooCert", "fooKey")).Build()
+			pipeline := testutils.NewTracePipelineBuilder().WithOTLPOutput(testutils.OTLPClientMTLSFromString("ca", "fooCert", "fooKey")).Build()
 			fakeClient := newTestClient(t, &pipeline)
 
 			gatewayConfigBuilderMock := &mocks.GatewayConfigBuilder{}
@@ -522,19 +524,19 @@ func TestAPIServerFailureHandling(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		setupPipeline   func() telemetryv1alpha1.TracePipeline
-		setupClient     func(*testing.T, *telemetryv1alpha1.TracePipeline) client.Client
+		setupPipeline   func() telemetryv1beta1.TracePipeline
+		setupClient     func(*testing.T, *telemetryv1beta1.TracePipeline) client.Client
 		setupReconciler func(client.Client, *mocks.GatewayConfigBuilder) (*testReconciler, func(*testing.T))
 	}{
 		{
 			name: "a request to the Kubernetes API server has failed when validating the secret references",
-			setupPipeline: func() telemetryv1alpha1.TracePipeline {
+			setupPipeline: func() telemetryv1beta1.TracePipeline {
 				return testutils.NewTracePipelineBuilder().WithOTLPOutput(testutils.OTLPEndpointFromSecret(
 					"existing",
 					"default",
 					"endpoint")).Build()
 			},
-			setupClient: func(t *testing.T, pipeline *telemetryv1alpha1.TracePipeline) client.Client {
+			setupClient: func(t *testing.T, pipeline *telemetryv1beta1.TracePipeline) client.Client {
 				secret := &corev1.Secret{
 					TypeMeta: metav1.TypeMeta{},
 					ObjectMeta: metav1.ObjectMeta{
@@ -561,10 +563,10 @@ func TestAPIServerFailureHandling(t *testing.T) {
 		},
 		{
 			name: "a request to the Kubernetes API server has failed when validating the max pipeline count limit",
-			setupPipeline: func() telemetryv1alpha1.TracePipeline {
+			setupPipeline: func() telemetryv1beta1.TracePipeline {
 				return testutils.NewTracePipelineBuilder().WithName("pipeline").Build()
 			},
-			setupClient: func(t *testing.T, pipeline *telemetryv1alpha1.TracePipeline) client.Client {
+			setupClient: func(t *testing.T, pipeline *telemetryv1beta1.TracePipeline) client.Client {
 				return newTestClient(t, pipeline)
 			},
 			setupReconciler: func(fakeClient client.Client, gatewayConfigBuilderMock *mocks.GatewayConfigBuilder) (*testReconciler, func(*testing.T)) {
@@ -724,6 +726,93 @@ func TestPodErrorConditionReporting(t *testing.T) {
 			require.Equal(t, tt.expectedMessage, cond.Message)
 
 			assertMocks(t)
+		})
+	}
+}
+
+func TestUsageTracking(t *testing.T) {
+	tests := []struct {
+		name                 string
+		pipeline             telemetryv1beta1.TracePipeline
+		expectedFeatureUsage map[string]float64
+	}{
+		{
+			name:                 "pipeline without features",
+			pipeline:             testutils.NewTracePipelineBuilder().WithName("pipeline-1").Build(),
+			expectedFeatureUsage: map[string]float64{},
+		},
+		{
+			name: "pipeline with transform",
+			pipeline: testutils.NewTracePipelineBuilder().
+				WithName("pipeline-2").
+				WithTransform(telemetryv1beta1.TransformSpec{
+					Statements: []string{"set(attributes[\"test\"], \"value\")"},
+				}).
+				Build(),
+			expectedFeatureUsage: map[string]float64{
+				metrics.FeatureTransform: 1,
+			},
+		},
+		{
+			name: "pipeline with filter",
+			pipeline: testutils.NewTracePipelineBuilder().
+				WithName("pipeline-3").
+				WithFilter(telemetryv1beta1.FilterSpec{
+					Conditions: []string{"attributes[\"test\"] == \"value\""},
+				}).
+				Build(),
+			expectedFeatureUsage: map[string]float64{
+				metrics.FeatureFilter: 1,
+			},
+		},
+		{
+			name: "pipeline with transform and filter",
+			pipeline: testutils.NewTracePipelineBuilder().
+				WithName("pipeline-4").
+				WithTransform(telemetryv1beta1.TransformSpec{
+					Statements: []string{"set(attributes[\"test\"], \"value\")"},
+				}).
+				WithFilter(telemetryv1beta1.FilterSpec{
+					Conditions: []string{"attributes[\"test\"] == \"value\""},
+				}).
+				Build(),
+			expectedFeatureUsage: map[string]float64{
+				metrics.FeatureTransform: 1,
+				metrics.FeatureFilter:    1,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// All possible features that can be tracked
+			allFeatures := []string{
+				metrics.FeatureTransform,
+				metrics.FeatureFilter,
+			}
+
+			oldFeatureUsage := map[string]float64{}
+			for _, feature := range allFeatures {
+				oldFeatureUsage[feature] = testutil.ToFloat64(metrics.TracePipelineFeatureUsage.WithLabelValues(feature, tt.pipeline.Name))
+			}
+
+			fakeClient := newTestClient(t, &tt.pipeline)
+
+			sut, assertAll := newTestReconciler(fakeClient)
+
+			result := reconcileAndGet(t, fakeClient, sut, tt.pipeline.Name)
+			require.NoError(t, result.err)
+
+			// Verify feature usage metrics for all features (default expected value is 0)
+			for _, feature := range allFeatures {
+				expectedValue := tt.expectedFeatureUsage[feature] // defaults to 0 if not in map
+				newMetricValue := testutil.ToFloat64(metrics.TracePipelineFeatureUsage.WithLabelValues(feature, tt.pipeline.Name))
+				oldMetricValue := oldFeatureUsage[feature]
+				metricValue := newMetricValue - oldMetricValue
+				require.Equal(t, expectedValue, metricValue, "feature usage metric should match for pipeline `%s` and feature `%s`", tt.pipeline.Name, feature)
+			}
+
+			assertAll(t)
 		})
 	}
 }

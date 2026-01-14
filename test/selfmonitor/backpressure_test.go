@@ -7,11 +7,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	operatorv1alpha1 "github.com/kyma-project/telemetry-manager/apis/operator/v1alpha1"
+	operatorv1beta1 "github.com/kyma-project/telemetry-manager/apis/operator/v1beta1"
 	"github.com/kyma-project/telemetry-manager/internal/conditions"
 	testutils "github.com/kyma-project/telemetry-manager/internal/utils/test"
 	"github.com/kyma-project/telemetry-manager/test/testkit/assert"
 	kitk8s "github.com/kyma-project/telemetry-manager/test/testkit/k8s"
+	kitk8sobjects "github.com/kyma-project/telemetry-manager/test/testkit/k8s/objects"
 	kitkyma "github.com/kyma-project/telemetry-manager/test/testkit/kyma"
 	kitbackend "github.com/kyma-project/telemetry-manager/test/testkit/mocks/backend"
 	"github.com/kyma-project/telemetry-manager/test/testkit/mocks/prommetricgen"
@@ -33,8 +34,8 @@ func TestBackpressure(t *testing.T) {
 			pipeline: func(includeNs string, backend *kitbackend.Backend) client.Object {
 				p := testutils.NewLogPipelineBuilder().
 					WithName(suite.LabelSelfMonitorLogAgentPrefix).
-					WithInput(testutils.BuildLogPipelineApplicationInput(testutils.ExtIncludeNamespaces(includeNs))).
-					WithOTLPOutput(testutils.OTLPEndpoint(backend.Endpoint())).
+					WithInput(testutils.BuildLogPipelineRuntimeInput(testutils.IncludeNamespaces(includeNs))).
+					WithOTLPOutput(testutils.OTLPEndpoint(backend.EndpointHTTP())).
 					Build()
 
 				return &p
@@ -52,7 +53,7 @@ func TestBackpressure(t *testing.T) {
 					{Reason: conditions.ReasonSelfMonFlowHealthy, Status: metav1.ConditionTrue},
 					{Reason: conditions.ReasonSelfMonAgentSomeDataDropped, Status: metav1.ConditionFalse},
 				})
-				assert.TelemetryHasState(t, operatorv1alpha1.StateWarning)
+				assert.TelemetryHasState(t, operatorv1beta1.StateWarning)
 				assert.TelemetryHasCondition(t, suite.K8sClient, metav1.Condition{
 					Type:   conditions.TypeLogComponentsHealthy,
 					Status: metav1.ConditionFalse,
@@ -66,7 +67,7 @@ func TestBackpressure(t *testing.T) {
 				p := testutils.NewLogPipelineBuilder().
 					WithName(suite.LabelSelfMonitorLogGatewayPrefix).
 					WithInput(testutils.BuildLogPipelineOTLPInput(testutils.IncludeNamespaces(includeNs))).
-					WithOTLPOutput(testutils.OTLPEndpoint(backend.Endpoint())).
+					WithOTLPOutput(testutils.OTLPEndpoint(backend.EndpointHTTP())).
 					Build()
 
 				return &p
@@ -86,7 +87,7 @@ func TestBackpressure(t *testing.T) {
 					{Reason: conditions.ReasonSelfMonFlowHealthy, Status: metav1.ConditionTrue},
 					{Reason: conditions.ReasonSelfMonGatewaySomeDataDropped, Status: metav1.ConditionFalse},
 				})
-				assert.TelemetryHasState(t, operatorv1alpha1.StateWarning)
+				assert.TelemetryHasState(t, operatorv1beta1.StateWarning)
 				assert.TelemetryHasCondition(t, suite.K8sClient, metav1.Condition{
 					Type:   conditions.TypeLogComponentsHealthy,
 					Status: metav1.ConditionFalse,
@@ -99,7 +100,7 @@ func TestBackpressure(t *testing.T) {
 			pipeline: func(includeNs string, backend *kitbackend.Backend) client.Object {
 				p := testutils.NewLogPipelineBuilder().
 					WithName(suite.LabelSelfMonitorFluentBitPrefix).
-					WithApplicationInput(true, testutils.ExtIncludeNamespaces(includeNs)).
+					WithRuntimeInput(true, testutils.IncludeNamespaces(includeNs)).
 					WithHTTPOutput(testutils.HTTPHost(backend.Host()), testutils.HTTPPort(backend.Port())).
 					Build()
 
@@ -116,7 +117,7 @@ func TestBackpressure(t *testing.T) {
 					{Reason: conditions.ReasonSelfMonAgentBufferFillingUp, Status: metav1.ConditionFalse},
 					{Reason: conditions.ReasonSelfMonAgentSomeDataDropped, Status: metav1.ConditionFalse},
 				})
-				assert.TelemetryHasState(t, operatorv1alpha1.StateWarning)
+				assert.TelemetryHasState(t, operatorv1beta1.StateWarning)
 				assert.TelemetryHasCondition(t, suite.K8sClient, metav1.Condition{
 					Type:   conditions.TypeLogComponentsHealthy,
 					Status: metav1.ConditionFalse,
@@ -129,7 +130,7 @@ func TestBackpressure(t *testing.T) {
 			pipeline: func(includeNs string, backend *kitbackend.Backend) client.Object {
 				p := testutils.NewMetricPipelineBuilder().
 					WithName(suite.LabelSelfMonitorMetricGatewayPrefix).
-					WithOTLPOutput(testutils.OTLPEndpoint(backend.Endpoint())).
+					WithOTLPOutput(testutils.OTLPEndpoint(backend.EndpointHTTP())).
 					Build()
 
 				return &p
@@ -149,7 +150,7 @@ func TestBackpressure(t *testing.T) {
 					{Reason: conditions.ReasonSelfMonFlowHealthy, Status: metav1.ConditionTrue},
 					{Reason: conditions.ReasonSelfMonGatewaySomeDataDropped, Status: metav1.ConditionFalse},
 				})
-				assert.TelemetryHasState(t, operatorv1alpha1.StateWarning)
+				assert.TelemetryHasState(t, operatorv1beta1.StateWarning)
 				assert.TelemetryHasCondition(t, suite.K8sClient, metav1.Condition{
 					Type:   conditions.TypeMetricComponentsHealthy,
 					Status: metav1.ConditionFalse,
@@ -163,7 +164,7 @@ func TestBackpressure(t *testing.T) {
 				p := testutils.NewMetricPipelineBuilder().
 					WithName(suite.LabelSelfMonitorMetricAgentPrefix).
 					WithPrometheusInput(true, testutils.IncludeNamespaces(includeNs)).
-					WithOTLPOutput(testutils.OTLPEndpoint(backend.Endpoint())).
+					WithOTLPOutput(testutils.OTLPEndpoint(backend.EndpointHTTP())).
 					Build()
 
 				return &p
@@ -184,7 +185,7 @@ func TestBackpressure(t *testing.T) {
 					{Reason: conditions.ReasonSelfMonFlowHealthy, Status: metav1.ConditionTrue},
 					{Reason: conditions.ReasonSelfMonAgentSomeDataDropped, Status: metav1.ConditionFalse},
 				})
-				assert.TelemetryHasState(t, operatorv1alpha1.StateWarning)
+				assert.TelemetryHasState(t, operatorv1beta1.StateWarning)
 				assert.TelemetryHasCondition(t, suite.K8sClient, metav1.Condition{
 					Type:   conditions.TypeMetricComponentsHealthy,
 					Status: metav1.ConditionFalse,
@@ -197,7 +198,7 @@ func TestBackpressure(t *testing.T) {
 			pipeline: func(includeNs string, backend *kitbackend.Backend) client.Object {
 				p := testutils.NewTracePipelineBuilder().
 					WithName(suite.LabelSelfMonitorTracesPrefix).
-					WithOTLPOutput(testutils.OTLPEndpoint(backend.Endpoint())).
+					WithOTLPOutput(testutils.OTLPEndpoint(backend.EndpointHTTP())).
 					Build()
 
 				return &p
@@ -217,7 +218,7 @@ func TestBackpressure(t *testing.T) {
 					{Reason: conditions.ReasonSelfMonFlowHealthy, Status: metav1.ConditionTrue},
 					{Reason: conditions.ReasonSelfMonGatewaySomeDataDropped, Status: metav1.ConditionFalse},
 				})
-				assert.TelemetryHasState(t, operatorv1alpha1.StateWarning)
+				assert.TelemetryHasState(t, operatorv1beta1.StateWarning)
 				assert.TelemetryHasCondition(t, suite.K8sClient, metav1.Condition{
 					Type:   conditions.TypeTraceComponentsHealthy,
 					Status: metav1.ConditionFalse,
@@ -251,16 +252,13 @@ func TestBackpressure(t *testing.T) {
 			generator := tc.generator(genNs)
 
 			resources := []client.Object{
-				kitk8s.NewNamespace(backendNs).K8sObject(),
-				kitk8s.NewNamespace(genNs).K8sObject(),
+				kitk8sobjects.NewNamespace(backendNs).K8sObject(),
+				kitk8sobjects.NewNamespace(genNs).K8sObject(),
 				pipeline,
 			}
 			resources = append(resources, generator...)
 			resources = append(resources, backend.K8sObjects()...)
 
-			t.Cleanup(func() {
-				Expect(kitk8s.DeleteObjects(resources...)).To(Succeed())
-			})
 			Expect(kitk8s.CreateObjects(t, resources...)).To(Succeed())
 
 			assert.BackendReachable(t, backend)

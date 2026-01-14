@@ -7,12 +7,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	telemetryv1alpha1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1alpha1"
+	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 	"github.com/kyma-project/telemetry-manager/internal/otelcollector/config/common"
 	"github.com/kyma-project/telemetry-manager/internal/otelcollector/config/logagent"
 	"github.com/kyma-project/telemetry-manager/internal/otelcollector/config/loggateway"
 	"github.com/kyma-project/telemetry-manager/internal/resources/otelcollector"
 	"github.com/kyma-project/telemetry-manager/internal/selfmonitor/prober"
+	"github.com/kyma-project/telemetry-manager/internal/validators/endpoint"
 	"github.com/kyma-project/telemetry-manager/internal/validators/tlscert"
 )
 
@@ -21,7 +22,7 @@ import (
 type GatewayConfigBuilder interface {
 	// Build generates the collector configuration, environment variables, and any errors encountered.
 	// It takes all log pipelines and build options including cluster information and enrichment settings.
-	Build(ctx context.Context, pipelines []telemetryv1alpha1.LogPipeline, opts loggateway.BuildOptions) (*common.Config, common.EnvVars, error)
+	Build(ctx context.Context, pipelines []telemetryv1beta1.LogPipeline, opts loggateway.BuildOptions) (*common.Config, common.EnvVars, error)
 }
 
 // GatewayApplierDeleter manages the lifecycle of log gateway Kubernetes resources.
@@ -63,7 +64,7 @@ type IstioStatusChecker interface {
 type AgentConfigBuilder interface {
 	// Build generates the collector configuration, environment variables, and any errors encountered.
 	// It takes all log pipelines requiring agents and build options including cluster information.
-	Build(ctx context.Context, pipelines []telemetryv1alpha1.LogPipeline, options logagent.BuildOptions) (*common.Config, common.EnvVars, error)
+	Build(ctx context.Context, pipelines []telemetryv1beta1.LogPipeline, options logagent.BuildOptions) (*common.Config, common.EnvVars, error)
 }
 
 // AgentApplierDeleter manages the lifecycle of log agent Kubernetes resources.
@@ -111,7 +112,7 @@ type EndpointValidator interface {
 	// Validate checks if the endpoint configuration is valid for the specified protocol.
 	// It verifies the endpoint format, DNS resolution, and protocol compatibility.
 	// Returns an error if the endpoint is invalid, unreachable, or incompatible with the protocol.
-	Validate(ctx context.Context, endpoint *telemetryv1alpha1.ValueType, protocol string) error
+	Validate(ctx context.Context, params endpoint.EndpointValidationParams) error
 }
 
 // TLSCertValidator validates TLS certificate configurations for secure connections.
@@ -120,7 +121,7 @@ type TLSCertValidator interface {
 	// Validate checks if the TLS certificate bundle is valid and not expired.
 	// It verifies the certificate chain, expiration dates, and proper encoding.
 	// Returns an error if the certificate is invalid, expired, or about to expire.
-	Validate(ctx context.Context, config tlscert.TLSBundle) error
+	Validate(ctx context.Context, config tlscert.TLSValidationParams) error
 }
 
 // SecretRefValidator validates secret references in LogPipeline resources.
@@ -129,7 +130,7 @@ type SecretRefValidator interface {
 	// ValidateLogPipeline checks if all secret references in the pipeline exist and are accessible.
 	// It verifies that secrets are present in the correct namespace and contain required keys.
 	// Returns an error if any secret is missing, inaccessible, or malformed.
-	ValidateLogPipeline(ctx context.Context, pipeline *telemetryv1alpha1.LogPipeline) error
+	ValidateLogPipeline(ctx context.Context, pipeline *telemetryv1beta1.LogPipeline) error
 }
 
 // TransformSpecValidator validates transform specifications in log pipeline configurations.
@@ -138,7 +139,7 @@ type TransformSpecValidator interface {
 	// Validate checks if the transform specifications are valid.
 	// It verifies syntax, supported operations, and configuration completeness.
 	// Returns an error if any transform is invalid or unsupported.
-	Validate(transforms []telemetryv1alpha1.TransformSpec) error
+	Validate(transforms []telemetryv1beta1.TransformSpec) error
 }
 
 // FilterSpecValidator validates filter specifications in log pipeline configurations.
@@ -147,5 +148,5 @@ type FilterSpecValidator interface {
 	// Validate checks if the filter specifications are valid.
 	// It verifies filter syntax, supported operations, and configuration completeness.
 	// Returns an error if any filter is invalid or unsupported.
-	Validate(filters []telemetryv1alpha1.FilterSpec) error
+	Validate(filters []telemetryv1beta1.FilterSpec) error
 }

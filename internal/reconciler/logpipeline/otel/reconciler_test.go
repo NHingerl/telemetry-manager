@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -11,8 +12,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	telemetryv1alpha1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1alpha1"
+	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 	"github.com/kyma-project/telemetry-manager/internal/conditions"
+	"github.com/kyma-project/telemetry-manager/internal/metrics"
 	commonStatusStubs "github.com/kyma-project/telemetry-manager/internal/reconciler/commonstatus/stubs"
 	"github.com/kyma-project/telemetry-manager/internal/reconciler/logpipeline/otel/mocks"
 	"github.com/kyma-project/telemetry-manager/internal/reconciler/logpipeline/stubs"
@@ -106,7 +108,7 @@ func TestAgentHealthCondition(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pipeline := testutils.NewLogPipelineBuilder().WithName("pipeline").WithOTLPOutput(testutils.OTLPEndpoint("http://localhost")).WithApplicationInput(true).Build()
+			pipeline := testutils.NewLogPipelineBuilder().WithName("pipeline").WithOTLPOutput(testutils.OTLPEndpoint("http://localhost")).WithRuntimeInput(true).Build()
 			fakeClient := newTestClient(t, &pipeline)
 
 			sut := newTestReconciler(fakeClient,
@@ -193,7 +195,7 @@ func TestGatewayFlowHealthCondition(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pipeline := testutils.NewLogPipelineBuilder().WithName("pipeline").WithOTLPOutput(testutils.OTLPEndpoint("http://localhost")).WithApplicationInput(true).Build()
+			pipeline := testutils.NewLogPipelineBuilder().WithName("pipeline").WithOTLPOutput(testutils.OTLPEndpoint("http://localhost")).WithRuntimeInput(true).Build()
 			fakeClient := newTestClient(t, &pipeline)
 
 			// Only override the gateway flow health prober to inject test scenario
@@ -269,7 +271,7 @@ func TestAgentFlowHealthCondition(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pipeline := testutils.NewLogPipelineBuilder().WithName("pipeline").WithOTLPOutput(testutils.OTLPEndpoint("http://localhost")).WithApplicationInput(true).Build()
+			pipeline := testutils.NewLogPipelineBuilder().WithName("pipeline").WithOTLPOutput(testutils.OTLPEndpoint("http://localhost")).WithRuntimeInput(true).Build()
 			fakeClient := newTestClient(t, &pipeline)
 
 			// Only override the agent flow health prober to inject test scenario
@@ -352,7 +354,7 @@ func TestAgentRequiredScenarios(t *testing.T) {
 		{
 			name: "one log pipeline does not require an agent",
 			pipelineConfigs: []pipelineConfig{
-				{name: "pipeline", applicationInput: false},
+				{name: "pipeline", RuntimeInput: false},
 			},
 			pipelinesToCheck: []string{"pipeline"},
 			expectedConditionPerPipeline: map[string]metav1.Condition{
@@ -366,8 +368,8 @@ func TestAgentRequiredScenarios(t *testing.T) {
 		{
 			name: "some log pipelines do not require an agent",
 			pipelineConfigs: []pipelineConfig{
-				{name: "pipeline1", applicationInput: false},
-				{name: "pipeline2", applicationInput: true},
+				{name: "pipeline1", RuntimeInput: false},
+				{name: "pipeline2", RuntimeInput: true},
 			},
 			pipelinesToCheck: []string{"pipeline1"},
 			expectedConditionPerPipeline: map[string]metav1.Condition{
@@ -386,8 +388,8 @@ func TestAgentRequiredScenarios(t *testing.T) {
 		{
 			name: "all log pipelines do not require an agent",
 			pipelineConfigs: []pipelineConfig{
-				{name: "pipeline1", applicationInput: false},
-				{name: "pipeline2", applicationInput: false},
+				{name: "pipeline1", RuntimeInput: false},
+				{name: "pipeline2", RuntimeInput: false},
 			},
 			pipelinesToCheck: []string{"pipeline1", "pipeline2"},
 			expectedConditionPerPipeline: map[string]metav1.Condition{
@@ -414,7 +416,7 @@ func TestAgentRequiredScenarios(t *testing.T) {
 				pipeline := testutils.NewLogPipelineBuilder().
 					WithName(cfg.name).
 					WithOTLPOutput().
-					WithApplicationInput(cfg.applicationInput).
+					WithRuntimeInput(cfg.RuntimeInput).
 					Build()
 				pipelines = append(pipelines, &pipeline)
 			}
@@ -441,36 +443,164 @@ func TestAgentRequiredScenarios(t *testing.T) {
 }
 
 type pipelineConfig struct {
-	name             string
-	applicationInput bool
+	name         string
+	RuntimeInput bool
 }
 
 func TestGetPipelinesRequiringAgents(t *testing.T) {
 	r := Reconciler{}
 
 	t.Run("no pipelines", func(t *testing.T) {
-		pipelines := []telemetryv1alpha1.LogPipeline{}
+		pipelines := []telemetryv1beta1.LogPipeline{}
 		require.Empty(t, r.getPipelinesRequiringAgents(pipelines))
 	})
 
 	t.Run("no pipeline requires an agent", func(t *testing.T) {
-		pipeline1 := testutils.NewLogPipelineBuilder().WithOTLPOutput().WithApplicationInput(false).Build()
-		pipeline2 := testutils.NewLogPipelineBuilder().WithOTLPOutput().WithApplicationInput(false).Build()
-		pipelines := []telemetryv1alpha1.LogPipeline{pipeline1, pipeline2}
+		pipeline1 := testutils.NewLogPipelineBuilder().WithOTLPOutput().WithRuntimeInput(false).Build()
+		pipeline2 := testutils.NewLogPipelineBuilder().WithOTLPOutput().WithRuntimeInput(false).Build()
+		pipelines := []telemetryv1beta1.LogPipeline{pipeline1, pipeline2}
 		require.Empty(t, r.getPipelinesRequiringAgents(pipelines))
 	})
 
 	t.Run("some pipelines require an agent", func(t *testing.T) {
-		pipeline1 := testutils.NewLogPipelineBuilder().WithOTLPOutput().WithApplicationInput(true).Build()
-		pipeline2 := testutils.NewLogPipelineBuilder().WithOTLPOutput().WithApplicationInput(false).Build()
-		pipelines := []telemetryv1alpha1.LogPipeline{pipeline1, pipeline2}
-		require.ElementsMatch(t, []telemetryv1alpha1.LogPipeline{pipeline1}, r.getPipelinesRequiringAgents(pipelines))
+		pipeline1 := testutils.NewLogPipelineBuilder().WithOTLPOutput().WithRuntimeInput(true).Build()
+		pipeline2 := testutils.NewLogPipelineBuilder().WithOTLPOutput().WithRuntimeInput(false).Build()
+		pipelines := []telemetryv1beta1.LogPipeline{pipeline1, pipeline2}
+		require.ElementsMatch(t, []telemetryv1beta1.LogPipeline{pipeline1}, r.getPipelinesRequiringAgents(pipelines))
 	})
 
 	t.Run("all pipelines require an agent", func(t *testing.T) {
-		pipeline1 := testutils.NewLogPipelineBuilder().WithOTLPOutput().WithApplicationInput(true).Build()
-		pipeline2 := testutils.NewLogPipelineBuilder().WithOTLPOutput().WithApplicationInput(true).Build()
-		pipelines := []telemetryv1alpha1.LogPipeline{pipeline1, pipeline2}
-		require.ElementsMatch(t, []telemetryv1alpha1.LogPipeline{pipeline1, pipeline2}, r.getPipelinesRequiringAgents(pipelines))
+		pipeline1 := testutils.NewLogPipelineBuilder().WithOTLPOutput().WithRuntimeInput(true).Build()
+		pipeline2 := testutils.NewLogPipelineBuilder().WithOTLPOutput().WithRuntimeInput(true).Build()
+		pipelines := []telemetryv1beta1.LogPipeline{pipeline1, pipeline2}
+		require.ElementsMatch(t, []telemetryv1beta1.LogPipeline{pipeline1, pipeline2}, r.getPipelinesRequiringAgents(pipelines))
 	})
+}
+
+func TestFeatureUsageTracking(t *testing.T) {
+	tests := []struct {
+		name                 string
+		pipeline             telemetryv1beta1.LogPipeline
+		expectedFeatureUsage map[string]float64
+	}{
+		{
+			name: "pipeline without features",
+			pipeline: testutils.NewLogPipelineBuilder().
+				WithName("pipeline-1").
+				WithOTLPInput(false).
+				WithOTLPOutput().
+				Build(),
+			expectedFeatureUsage: map[string]float64{},
+		},
+		{
+			name: "pipeline with transform",
+			pipeline: testutils.NewLogPipelineBuilder().
+				WithName("pipeline-2").
+				WithOTLPInput(false).
+				WithOTLPOutput().
+				WithTransform(telemetryv1beta1.TransformSpec{
+					Statements: []string{"set(attributes[\"test\"], \"value\")"},
+				}).
+				Build(),
+			expectedFeatureUsage: map[string]float64{
+				metrics.FeatureTransform: 1,
+			},
+		},
+		{
+			name: "pipeline with filter",
+			pipeline: testutils.NewLogPipelineBuilder().
+				WithName("pipeline-3").
+				WithOTLPInput(false).
+				WithOTLPOutput().
+				WithFilter(telemetryv1beta1.FilterSpec{
+					Conditions: []string{"attributes[\"test\"] == \"value\""},
+				}).
+				Build(),
+			expectedFeatureUsage: map[string]float64{
+				metrics.FeatureFilter: 1,
+			},
+		},
+		{
+			name: "pipeline with transform and filter",
+			pipeline: testutils.NewLogPipelineBuilder().
+				WithName("pipeline-4").
+				WithOTLPInput(false).
+				WithOTLPOutput().
+				WithTransform(telemetryv1beta1.TransformSpec{
+					Statements: []string{"set(attributes[\"test\"], \"value\")"},
+				}).
+				WithFilter(telemetryv1beta1.FilterSpec{
+					Conditions: []string{"attributes[\"test\"] == \"value\""},
+				}).
+				Build(),
+			expectedFeatureUsage: map[string]float64{
+				metrics.FeatureTransform: 1,
+				metrics.FeatureFilter:    1,
+			},
+		},
+		{
+			name: "pipeline with OTLP input",
+			pipeline: testutils.NewLogPipelineBuilder().
+				WithName("pipeline-5").
+				WithOTLPOutput().
+				WithOTLPInput(true).
+				Build(),
+			expectedFeatureUsage: map[string]float64{
+				metrics.FeatureInputOTLP: 1,
+			},
+		},
+		{
+			name: "pipeline with runtime and otlp input",
+			pipeline: testutils.NewLogPipelineBuilder().
+				WithName("pipeline-6").
+				WithOTLPInput(true).
+				WithRuntimeInput(true).
+				WithOTLPOutput().
+				WithRuntimeInput(true).
+				Build(),
+			expectedFeatureUsage: map[string]float64{
+				metrics.FeatureInputRuntime: 1,
+				metrics.FeatureInputOTLP:    1,
+			},
+		},
+		{
+			name: "pipeline with all OTLP features",
+			pipeline: testutils.NewLogPipelineBuilder().
+				WithName("pipeline-12").
+				WithOTLPOutput().
+				WithOTLPInput(true).
+				WithRuntimeInput(true).
+				WithTransform(telemetryv1beta1.TransformSpec{
+					Statements: []string{"set(attributes[\"test\"], \"value\")"},
+				}).
+				WithFilter(telemetryv1beta1.FilterSpec{
+					Conditions: []string{"attributes[\"test\"] == \"value\""},
+				}).
+				Build(),
+			expectedFeatureUsage: map[string]float64{
+				metrics.FeatureTransform:    1,
+				metrics.FeatureFilter:       1,
+				metrics.FeatureInputOTLP:    1,
+				metrics.FeatureInputRuntime: 1,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClient := newTestClient(t, &tt.pipeline)
+
+			sut := newTestReconciler(fakeClient)
+
+			result := reconcileAndGet(t, fakeClient, sut, tt.pipeline.Name)
+			require.NoError(t, result.err)
+
+			// Verify feature usage metrics for all features (default expected value is 0)
+			for _, feature := range metrics.AllFeatures {
+				expectedValue := tt.expectedFeatureUsage[feature] // defaults to 0 if not in map
+				metricValue := testutil.ToFloat64(metrics.LogPipelineFeatureUsage.WithLabelValues(feature, tt.pipeline.Name))
+				require.Equal(t, expectedValue, metricValue, "feature usage metric should match for pipeline `%s` and feature `%s`", tt.pipeline.Name, feature)
+			}
+		})
+	}
 }

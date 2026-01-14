@@ -6,10 +6,11 @@ import (
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	telemetryv1alpha1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1alpha1"
+	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 	testutils "github.com/kyma-project/telemetry-manager/internal/utils/test"
 	"github.com/kyma-project/telemetry-manager/test/testkit/assert"
 	kitk8s "github.com/kyma-project/telemetry-manager/test/testkit/k8s"
+	kitk8sobjects "github.com/kyma-project/telemetry-manager/test/testkit/k8s/objects"
 	kitkyma "github.com/kyma-project/telemetry-manager/test/testkit/kyma"
 	. "github.com/kyma-project/telemetry-manager/test/testkit/matchers/log"
 	kitbackend "github.com/kyma-project/telemetry-manager/test/testkit/mocks/backend"
@@ -22,19 +23,19 @@ import (
 func TestServiceName_OTel(t *testing.T) {
 	tests := []struct {
 		label        string
-		inputBuilder func(includeNs string) telemetryv1alpha1.LogPipelineInput
+		inputBuilder func(includeNs string) telemetryv1beta1.LogPipelineInput
 		expectAgent  bool
 	}{
 		{
 			label: suite.LabelLogAgent,
-			inputBuilder: func(includeNs string) telemetryv1alpha1.LogPipelineInput {
-				return testutils.BuildLogPipelineApplicationInput(testutils.ExtIncludeNamespaces(includeNs))
+			inputBuilder: func(includeNs string) telemetryv1beta1.LogPipelineInput {
+				return testutils.BuildLogPipelineRuntimeInput(testutils.IncludeNamespaces(includeNs))
 			},
 			expectAgent: true,
 		},
 		{
 			label: suite.LabelLogGateway,
-			inputBuilder: func(includeNs string) telemetryv1alpha1.LogPipelineInput {
+			inputBuilder: func(includeNs string) telemetryv1beta1.LogPipelineInput {
 				return testutils.BuildLogPipelineOTLPInput(testutils.IncludeNamespaces(includeNs))
 			},
 			expectAgent: false,
@@ -68,7 +69,7 @@ func TestServiceName_OTel(t *testing.T) {
 			)
 
 			backend := kitbackend.New(backendNs, kitbackend.SignalTypeLogsOTel)
-			hostSecretRef := backend.HostSecretRefV1Alpha1()
+			hostSecretRef := backend.HostSecretRefV1Beta1()
 
 			pipeline := testutils.NewLogPipelineBuilder().
 				WithName(pipelineName).
@@ -84,8 +85,8 @@ func TestServiceName_OTel(t *testing.T) {
 				Build()
 
 			resources := []client.Object{
-				kitk8s.NewNamespace(backendNs).K8sObject(),
-				kitk8s.NewNamespace(genNs).K8sObject(),
+				kitk8sobjects.NewNamespace(backendNs).K8sObject(),
+				kitk8sobjects.NewNamespace(genNs).K8sObject(),
 				&pipeline,
 			}
 			resources = append(resources, backend.K8sObjects()...)
@@ -93,29 +94,26 @@ func TestServiceName_OTel(t *testing.T) {
 			if tc.expectAgent {
 				podSpecLogs := stdoutloggen.PodSpec()
 				resources = append(resources,
-					kitk8s.NewPod(podWithBothLabelsName, genNs).
+					kitk8sobjects.NewPod(podWithBothLabelsName, genNs).
 						WithLabel(kubeAppLabelKey, kubeAppLabelValue).
 						WithLabel(appLabelKey, appLabelValue).
 						WithPodSpec(podSpecLogs).
 						K8sObject(),
-					kitk8s.NewJob(jobName, genNs).WithPodSpec(podSpecLogs).K8sObject(),
-					kitk8s.NewPod(podWithNoLabelsName, genNs).WithPodSpec(podSpecLogs).K8sObject(),
+					kitk8sobjects.NewJob(jobName, genNs).WithPodSpec(podSpecLogs).K8sObject(),
+					kitk8sobjects.NewPod(podWithNoLabelsName, genNs).WithPodSpec(podSpecLogs).K8sObject(),
 				)
 			} else {
 				podSpecWithUndefinedService := telemetrygen.PodSpec(telemetrygen.SignalTypeLogs, telemetrygen.WithServiceName(""))
 				resources = append(resources,
-					kitk8s.NewPod(podWithAppLabelName, genNs).
+					kitk8sobjects.NewPod(podWithAppLabelName, genNs).
 						WithLabel(appLabelKey, appLabelValue).
 						WithPodSpec(podSpecWithUndefinedService).
 						K8sObject(),
-					kitk8s.NewDeployment(deploymentName, genNs).WithPodSpec(podSpecWithUndefinedService).K8sObject(),
-					kitk8s.NewStatefulSet(statefulSetName, genNs).WithPodSpec(podSpecWithUndefinedService).K8sObject(),
+					kitk8sobjects.NewDeployment(deploymentName, genNs).WithPodSpec(podSpecWithUndefinedService).K8sObject(),
+					kitk8sobjects.NewStatefulSet(statefulSetName, genNs).WithPodSpec(podSpecWithUndefinedService).K8sObject(),
 				)
 			}
 
-			t.Cleanup(func() {
-				Expect(kitk8s.DeleteObjects(resources...)).To(Succeed())
-			})
 			Expect(kitk8s.CreateObjects(t, resources...)).To(Succeed())
 
 			assert.DeploymentReady(t, kitkyma.LogGatewayName)

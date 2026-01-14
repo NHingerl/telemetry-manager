@@ -7,10 +7,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	telemetryv1alpha1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1alpha1"
+	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 	testutils "github.com/kyma-project/telemetry-manager/internal/utils/test"
 	"github.com/kyma-project/telemetry-manager/test/testkit/assert"
 	kitk8s "github.com/kyma-project/telemetry-manager/test/testkit/k8s"
+	kitk8sobjects "github.com/kyma-project/telemetry-manager/test/testkit/k8s/objects"
 	kitkyma "github.com/kyma-project/telemetry-manager/test/testkit/kyma"
 	kitbackend "github.com/kyma-project/telemetry-manager/test/testkit/mocks/backend"
 	"github.com/kyma-project/telemetry-manager/test/testkit/mocks/stdoutloggen"
@@ -22,23 +23,23 @@ import (
 func TestNamespaceSelector_OTel(t *testing.T) {
 	tests := []struct {
 		label               string
-		inputBuilder        func(includeNss, excludeNss []string) telemetryv1alpha1.LogPipelineInput
+		inputBuilder        func(includeNss, excludeNss []string) telemetryv1beta1.LogPipelineInput
 		logGeneratorBuilder func(ns string) client.Object
 		expectAgent         bool
 	}{
 		{
 			label: suite.LabelLogAgent,
-			inputBuilder: func(includeNss, excludeNss []string) telemetryv1alpha1.LogPipelineInput {
-				var opts []testutils.ExtendedNamespaceSelectorOptions
+			inputBuilder: func(includeNss, excludeNss []string) telemetryv1beta1.LogPipelineInput {
+				var opts []testutils.NamespaceSelectorOptions
 				if len(includeNss) > 0 {
-					opts = append(opts, testutils.ExtIncludeNamespaces(includeNss...))
+					opts = append(opts, testutils.IncludeNamespaces(includeNss...))
 				}
 
 				if len(excludeNss) > 0 {
-					opts = append(opts, testutils.ExtExcludeNamespaces(excludeNss...))
+					opts = append(opts, testutils.ExcludeNamespaces(excludeNss...))
 				}
 
-				return testutils.BuildLogPipelineApplicationInput(opts...)
+				return testutils.BuildLogPipelineRuntimeInput(opts...)
 			},
 			logGeneratorBuilder: func(ns string) client.Object {
 				return stdoutloggen.NewDeployment(ns).K8sObject()
@@ -47,7 +48,7 @@ func TestNamespaceSelector_OTel(t *testing.T) {
 		},
 		{
 			label: suite.LabelLogGateway,
-			inputBuilder: func(includeNss, excludeNss []string) telemetryv1alpha1.LogPipelineInput {
+			inputBuilder: func(includeNss, excludeNss []string) telemetryv1beta1.LogPipelineInput {
 				var opts []testutils.NamespaceSelectorOptions
 				if len(includeNss) > 0 {
 					opts = append(opts, testutils.IncludeNamespaces(includeNss...))
@@ -85,7 +86,7 @@ func TestNamespaceSelector_OTel(t *testing.T) {
 			includePipeline := testutils.NewLogPipelineBuilder().
 				WithName(includePipelineName).
 				WithInput(tc.inputBuilder([]string{gen1Ns}, nil)).
-				WithOTLPOutput(testutils.OTLPEndpoint(backend1.Endpoint())).
+				WithOTLPOutput(testutils.OTLPEndpoint(backend1.EndpointHTTP())).
 				Build()
 
 			// Exclude all namespaces except gen1Ns (gen2Ns and other unrelated namespaces)
@@ -106,13 +107,13 @@ func TestNamespaceSelector_OTel(t *testing.T) {
 			excludePipeline := testutils.NewLogPipelineBuilder().
 				WithName(excludePipelineName).
 				WithInput(tc.inputBuilder(nil, excludeNss)).
-				WithOTLPOutput(testutils.OTLPEndpoint(backend2.Endpoint())).
+				WithOTLPOutput(testutils.OTLPEndpoint(backend2.EndpointHTTP())).
 				Build()
 
 			resources := []client.Object{
-				kitk8s.NewNamespace(backendNs).K8sObject(),
-				kitk8s.NewNamespace(gen1Ns).K8sObject(),
-				kitk8s.NewNamespace(gen2Ns).K8sObject(),
+				kitk8sobjects.NewNamespace(backendNs).K8sObject(),
+				kitk8sobjects.NewNamespace(gen1Ns).K8sObject(),
+				kitk8sobjects.NewNamespace(gen2Ns).K8sObject(),
 				&includePipeline,
 				&excludePipeline,
 				tc.logGeneratorBuilder(gen1Ns),
@@ -121,9 +122,6 @@ func TestNamespaceSelector_OTel(t *testing.T) {
 			resources = append(resources, backend1.K8sObjects()...)
 			resources = append(resources, backend2.K8sObjects()...)
 
-			t.Cleanup(func() {
-				Expect(kitk8s.DeleteObjects(resources...)).To(Succeed())
-			})
 			Expect(kitk8s.CreateObjects(t, resources...)).To(Succeed())
 
 			assert.BackendReachable(t, backend1)
@@ -160,20 +158,20 @@ func TestNamespaceSelector_FluentBit(t *testing.T) {
 
 	includePipeline := testutils.NewLogPipelineBuilder().
 		WithName(includePipelineName).
-		WithApplicationInput(true, testutils.ExtIncludeNamespaces(gen1Ns)).
+		WithRuntimeInput(true, testutils.IncludeNamespaces(gen1Ns)).
 		WithHTTPOutput(testutils.HTTPHost(backend1.Host()), testutils.HTTPPort(backend1.Port())).
 		Build()
 
 	excludeGen2Pipeline := testutils.NewLogPipelineBuilder().
 		WithName(excludePipelineName).
-		WithApplicationInput(true, testutils.ExtExcludeNamespaces(gen2Ns)).
+		WithRuntimeInput(true, testutils.ExcludeNamespaces(gen2Ns)).
 		WithHTTPOutput(testutils.HTTPHost(backend2.Host()), testutils.HTTPPort(backend2.Port())).
 		Build()
 
 	resources := []client.Object{
-		kitk8s.NewNamespace(backendNs).K8sObject(),
-		kitk8s.NewNamespace(gen1Ns).K8sObject(),
-		kitk8s.NewNamespace(gen2Ns).K8sObject(),
+		kitk8sobjects.NewNamespace(backendNs).K8sObject(),
+		kitk8sobjects.NewNamespace(gen1Ns).K8sObject(),
+		kitk8sobjects.NewNamespace(gen2Ns).K8sObject(),
 		&includePipeline,
 		&excludeGen2Pipeline,
 		stdoutloggen.NewDeployment(gen1Ns).K8sObject(),
@@ -182,9 +180,6 @@ func TestNamespaceSelector_FluentBit(t *testing.T) {
 	resources = append(resources, backend1.K8sObjects()...)
 	resources = append(resources, backend2.K8sObjects()...)
 
-	t.Cleanup(func() {
-		Expect(kitk8s.DeleteObjects(resources...)).To(Succeed())
-	})
 	Expect(kitk8s.CreateObjects(t, resources...)).To(Succeed())
 
 	assert.BackendReachable(t, backend1)

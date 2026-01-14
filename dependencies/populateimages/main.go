@@ -18,8 +18,9 @@ var templates = map[string]string{
 package testkit
 
 const (
-	DefaultTelemetryGenImage  = "{{ .ENV_TEST_TELEMETRYGEN_IMAGE }}"
-	DefaultOTelCollectorImage = "{{ .ENV_OTEL_COLLECTOR_IMAGE }}"
+	DefaultTelemetryGenImage         = "{{ .ENV_TEST_TELEMETRYGEN_IMAGE }}"
+	DefaultOTelCollectorContribImage = "{{ .ENV_OTEL_COLLECTOR_CONTRIB_IMAGE }}"
+	DefaultOTelCollectorImage        = "{{ .ENV_OTEL_COLLECTOR_IMAGE }}"
 )
 `,
 }
@@ -108,8 +109,9 @@ func generateSecScanConfig(data map[string]string) error {
 		"**/*_test.go",
 		"docs/**",
 		"dependencies/populateimages/**",
-		"dependencies/telemetry-sample-app/**",
+		"dependencies/sample-app/**",
 		"dependencies/stdout-log-generator/**",
+		"internal/tools/**",
 	}
 
 	secScanCfg := secScanConfig{

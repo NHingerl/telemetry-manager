@@ -8,10 +8,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	telemetryv1alpha1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1alpha1"
+	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 	"github.com/kyma-project/telemetry-manager/internal/config"
 	"github.com/kyma-project/telemetry-manager/internal/errortypes"
 	fbports "github.com/kyma-project/telemetry-manager/internal/fluentbit/ports"
+	"github.com/kyma-project/telemetry-manager/internal/metrics"
 	"github.com/kyma-project/telemetry-manager/internal/resourcelock"
 	"github.com/kyma-project/telemetry-manager/internal/resources/fluentbit"
 	k8sutils "github.com/kyma-project/telemetry-manager/internal/utils/k8s"
@@ -127,7 +128,7 @@ func New(opts ...Option) *Reconciler {
 	return r
 }
 
-func (r *Reconciler) Reconcile(ctx context.Context, pipeline *telemetryv1alpha1.LogPipeline) error {
+func (r *Reconciler) Reconcile(ctx context.Context, pipeline *telemetryv1beta1.LogPipeline) error {
 	logf.FromContext(ctx).V(1).Info("Reconciling LogPipeline")
 
 	err := r.doReconcile(ctx, pipeline)
@@ -142,7 +143,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, pipeline *telemetryv1alpha1.
 	return err
 }
 
-func (r *Reconciler) IsReconcilable(ctx context.Context, pipeline *telemetryv1alpha1.LogPipeline) (bool, error) {
+func (r *Reconciler) IsReconcilable(ctx context.Context, pipeline *telemetryv1beta1.LogPipeline) (bool, error) {
 	if r.globals.OperateInFIPSMode() {
 		logf.FromContext(ctx).V(1).Info("Pipeline is not reconcilable: Fluent Bit is not supported in FIPS mode")
 		return false, nil
@@ -154,9 +155,9 @@ func (r *Reconciler) IsReconcilable(ctx context.Context, pipeline *telemetryv1al
 
 	var appInputEnabled *bool
 
-	// Treat the pipeline as non-reconcilable if the application input is explicitly disabled
-	if pipeline.Spec.Input.Application != nil {
-		appInputEnabled = pipeline.Spec.Input.Application.Enabled
+	// Treat the pipeline as non-reconcilable if the Runtime input is explicitly disabled
+	if pipeline.Spec.Input.Runtime != nil {
+		appInputEnabled = pipeline.Spec.Input.Runtime.Enabled
 	}
 
 	if appInputEnabled != nil && !*appInputEnabled {
@@ -180,7 +181,7 @@ func (r *Reconciler) IsReconcilable(ctx context.Context, pipeline *telemetryv1al
 	return false, nil
 }
 
-func (r *Reconciler) doReconcile(ctx context.Context, pipeline *telemetryv1alpha1.LogPipeline) error {
+func (r *Reconciler) doReconcile(ctx context.Context, pipeline *telemetryv1beta1.LogPipeline) error {
 	if err := r.pipelineLock.TryAcquireLock(ctx, pipeline); err != nil {
 		if errors.Is(err, resourcelock.ErrMaxPipelinesExceeded) {
 			logf.FromContext(ctx).V(1).Info("Skipping reconciliation: maximum pipeline count limit exceeded")
@@ -218,6 +219,8 @@ func (r *Reconciler) doReconcile(ctx context.Context, pipeline *telemetryv1alpha
 
 		return nil
 	}
+
+	r.trackFeaturesUsage(reconcilablePipelines)
 
 	shootInfo := k8sutils.GetGardenerShootInfo(ctx, r.Client)
 	clusterName := r.getClusterNameFromTelemetry(ctx, shootInfo.ClusterName)
@@ -268,8 +271,8 @@ func (r *Reconciler) getClusterNameFromTelemetry(ctx context.Context, defaultNam
 
 // getReconcilablePipelines returns the list of log pipelines that are ready to be rendered into the Fluent Bit configuration.
 // A pipeline is deployable if it is not being deleted, and all secret references exist.
-func (r *Reconciler) getReconcilablePipelines(ctx context.Context, allPipelines []telemetryv1alpha1.LogPipeline) ([]telemetryv1alpha1.LogPipeline, error) {
-	var reconcilableLogPipelines []telemetryv1alpha1.LogPipeline
+func (r *Reconciler) getReconcilablePipelines(ctx context.Context, allPipelines []telemetryv1beta1.LogPipeline) ([]telemetryv1beta1.LogPipeline, error) {
+	var reconcilableLogPipelines []telemetryv1beta1.LogPipeline
 
 	for i := range allPipelines {
 		isReconcilable, err := r.IsReconcilable(ctx, &allPipelines[i])
@@ -289,5 +292,36 @@ func getFluentBitPorts() []int32 {
 	return []int32{
 		fbports.ExporterMetrics,
 		fbports.HTTP,
+	}
+}
+
+func (r *Reconciler) trackFeaturesUsage(pipelines []telemetryv1beta1.LogPipeline) {
+	for i := range pipelines {
+		// General features
+		if logpipelineutils.IsRuntimeInputEnabled(&pipelines[i].Spec.Input) {
+			metrics.RecordLogPipelineFeatureUsage(metrics.FeatureInputRuntime, pipelines[i].Name)
+		}
+
+		// FluentBit features
+
+		if logpipelineutils.IsCustomFilterDefined(pipelines[i].Spec.FluentBitFilters) {
+			metrics.RecordLogPipelineFeatureUsage(metrics.FeatureFilters, pipelines[i].Name)
+		}
+
+		if logpipelineutils.IsCustomOutputDefined(&pipelines[i].Spec.Output) {
+			metrics.RecordLogPipelineFeatureUsage(metrics.FeatureOutputCustom, pipelines[i].Name)
+		}
+
+		if logpipelineutils.IsHTTPOutputDefined(&pipelines[i].Spec.Output) {
+			metrics.RecordLogPipelineFeatureUsage(metrics.FeatureOutputHTTP, pipelines[i].Name)
+		}
+
+		if logpipelineutils.IsVariablesDefined(pipelines[i].Spec.FluentBitVariables) {
+			metrics.RecordLogPipelineFeatureUsage(metrics.FeatureVariables, pipelines[i].Name)
+		}
+
+		if logpipelineutils.IsFilesDefined(pipelines[i].Spec.FluentBitFiles) {
+			metrics.RecordLogPipelineFeatureUsage(metrics.FeatureFiles, pipelines[i].Name)
+		}
 	}
 }

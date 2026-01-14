@@ -6,19 +6,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	telemetryv1alpha1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1alpha1"
+	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 	"github.com/kyma-project/telemetry-manager/internal/otelcollector/config/common"
 	"github.com/kyma-project/telemetry-manager/internal/otelcollector/config/tracegateway"
 	"github.com/kyma-project/telemetry-manager/internal/overrides"
 	"github.com/kyma-project/telemetry-manager/internal/resources/otelcollector"
 	"github.com/kyma-project/telemetry-manager/internal/selfmonitor/prober"
+	"github.com/kyma-project/telemetry-manager/internal/validators/endpoint"
 	"github.com/kyma-project/telemetry-manager/internal/validators/tlscert"
 )
 
 // GatewayConfigBuilder builds OpenTelemetry Collector configuration for the trace gateway from TracePipeline resources.
 type GatewayConfigBuilder interface {
 	// Build constructs the collector configuration and environment variables from the provided pipelines and build options.
-	Build(ctx context.Context, pipelines []telemetryv1alpha1.TracePipeline, opts tracegateway.BuildOptions) (*common.Config, common.EnvVars, error)
+	Build(ctx context.Context, pipelines []telemetryv1beta1.TracePipeline, opts tracegateway.BuildOptions) (*common.Config, common.EnvVars, error)
 }
 
 // GatewayApplierDeleter manages the lifecycle of trace gateway Kubernetes resources.
@@ -65,29 +66,29 @@ type IstioStatusChecker interface {
 // EndpointValidator validates trace pipeline endpoint configurations.
 type EndpointValidator interface {
 	// Validate checks if the endpoint configuration is valid for the specified protocol.
-	Validate(ctx context.Context, endpoint *telemetryv1alpha1.ValueType, protocol string) error
+	Validate(ctx context.Context, params endpoint.EndpointValidationParams) error
 }
 
 // SecretRefValidator validates secret references in TracePipeline resources.
 type SecretRefValidator interface {
 	// ValidateTracePipeline checks if all secret references in the pipeline exist and are accessible.
-	ValidateTracePipeline(ctx context.Context, pipeline *telemetryv1alpha1.TracePipeline) error
+	ValidateTracePipeline(ctx context.Context, pipeline *telemetryv1beta1.TracePipeline) error
 }
 
 // TLSCertValidator validates TLS certificate configurations.
 type TLSCertValidator interface {
 	// Validate checks if the TLS certificate bundle is valid and not expired.
-	Validate(ctx context.Context, config tlscert.TLSBundle) error
+	Validate(ctx context.Context, config tlscert.TLSValidationParams) error
 }
 
 // TransformSpecValidator validates transform specifications in pipeline configurations.
 type TransformSpecValidator interface {
 	// Validate checks if the transform specifications are valid.
-	Validate(transforms []telemetryv1alpha1.TransformSpec) error
+	Validate(transforms []telemetryv1beta1.TransformSpec) error
 }
 
 // FilterSpecValidator validates filter specifications in pipeline configurations.
 type FilterSpecValidator interface {
 	// Validate checks if the filter specifications are valid.
-	Validate(filters []telemetryv1alpha1.FilterSpec) error
+	Validate(filters []telemetryv1beta1.FilterSpec) error
 }

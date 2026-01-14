@@ -6,48 +6,64 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	operatorv1alpha1 "github.com/kyma-project/telemetry-manager/apis/operator/v1alpha1"
+	operatorv1beta1 "github.com/kyma-project/telemetry-manager/apis/operator/v1beta1"
 )
 
-func TestInsertClusterNameProcessorConfig(t *testing.T) {
+func TestInsertClusterAttributesProcessorStatements(t *testing.T) {
 	require := require.New(t)
 
-	expectedAttributeActions := []AttributeAction{
-		{
-			Action: AttributeActionInsert,
-			Key:    "k8s.cluster.name",
-			Value:  "test-cluster",
+	expectedProcessorStatements := []TransformProcessorStatements{{
+		Statements: []string{
+			"set(resource.attributes[\"k8s.cluster.name\"], \"test-cluster\") where resource.attributes[\"k8s.cluster.name\"] == nil or resource.attributes[\"k8s.cluster.name\"] == \"\"",
+			"set(resource.attributes[\"k8s.cluster.uid\"], \"test-cluster-uid\") where resource.attributes[\"k8s.cluster.uid\"] == nil or resource.attributes[\"k8s.cluster.uid\"] == \"\"",
+			"set(resource.attributes[\"cloud.provider\"], \"test-cloud-provider\") where resource.attributes[\"cloud.provider\"] == nil or resource.attributes[\"cloud.provider\"] == \"\"",
 		},
-		{
-			Action: AttributeActionInsert,
-			Key:    "k8s.cluster.uid",
-			Value:  "test-cluster-uid",
-		},
-		{
-			Action: AttributeActionInsert,
-			Key:    "cloud.provider",
-			Value:  "test-cloud-provider",
-		},
-	}
+	}}
 
-	config := InsertClusterAttributesProcessorConfig("test-cluster", "test-cluster-uid", "test-cloud-provider")
+	processorStatements := InsertClusterAttributesProcessorStatements(
+		ClusterOptions{
+			ClusterName:   "test-cluster",
+			ClusterUID:    "test-cluster-uid",
+			CloudProvider: "test-cloud-provider",
+		},
+	)
 
-	require.ElementsMatch(expectedAttributeActions, config.Attributes, "Attributes should match")
+	require.ElementsMatch(expectedProcessorStatements, processorStatements, "Attributes should match")
 }
 
-func TestDropKymaAttributesProcessorConfig(t *testing.T) {
+func TestInsertClusterAttributesProcessorStatementsWithEmptyValues(t *testing.T) {
 	require := require.New(t)
 
-	expectedAttributeActions := []AttributeAction{
-		{
-			Action:       AttributeActionDelete,
-			RegexPattern: "kyma.*",
+	expectedProcessorStatements := []TransformProcessorStatements{{
+		Statements: []string{
+			"set(resource.attributes[\"k8s.cluster.name\"], \"\") where resource.attributes[\"k8s.cluster.name\"] == nil or resource.attributes[\"k8s.cluster.name\"] == \"\"",
+			"set(resource.attributes[\"k8s.cluster.uid\"], \"\") where resource.attributes[\"k8s.cluster.uid\"] == nil or resource.attributes[\"k8s.cluster.uid\"] == \"\"",
 		},
-	}
+	}}
 
-	config := DropKymaAttributesProcessorConfig()
+	processorStatements := InsertClusterAttributesProcessorStatements(
+		ClusterOptions{
+			ClusterName:   "",
+			ClusterUID:    "",
+			CloudProvider: "",
+		},
+	)
 
-	require.ElementsMatch(expectedAttributeActions, config.Attributes, "Attributes should match")
+	require.ElementsMatch(expectedProcessorStatements, processorStatements, "Attributes should match")
+}
+
+func TestDropKymaAttributesProcessorStatements(t *testing.T) {
+	require := require.New(t)
+
+	expectedProcessorStatements := []TransformProcessorStatements{{
+		Statements: []string{
+			"delete_matching_keys(resource.attributes, \"kyma.*\")",
+		},
+	}}
+
+	processorStatements := DropKymaAttributesProcessorStatements()
+
+	require.ElementsMatch(expectedProcessorStatements, processorStatements, "Attributes should match")
 }
 
 func TestTransformedInstrumentationScope(t *testing.T) {
@@ -222,8 +238,8 @@ func TestK8sAttributesProcessorConfig(t *testing.T) {
 		},
 	}
 
-	config := K8sAttributesProcessorConfig(&operatorv1alpha1.EnrichmentSpec{
-		ExtractPodLabels: []operatorv1alpha1.PodLabel{
+	config := K8sAttributesProcessorConfig(&operatorv1beta1.EnrichmentSpec{
+		ExtractPodLabels: []operatorv1beta1.PodLabel{
 			{Key: "", KeyPrefix: "app.kubernetes.io/name"},
 			{Key: "app", KeyPrefix: ""},
 		},
@@ -240,20 +256,20 @@ func TestK8sAttributesProcessorConfig(t *testing.T) {
 func TestBuildPodLabelEnrichments(t *testing.T) {
 	tests := []struct {
 		name     string
-		presets  *operatorv1alpha1.EnrichmentSpec
+		presets  *operatorv1beta1.EnrichmentSpec
 		expected []ExtractLabel
 	}{
 		{
 			name: "Enrichments disabled",
-			presets: &operatorv1alpha1.EnrichmentSpec{
-				ExtractPodLabels: []operatorv1alpha1.PodLabel{},
+			presets: &operatorv1beta1.EnrichmentSpec{
+				ExtractPodLabels: []operatorv1beta1.PodLabel{},
 			},
 			expected: []ExtractLabel{},
 		},
 		{
 			name: "Enrichments enabled with key",
-			presets: &operatorv1alpha1.EnrichmentSpec{
-				ExtractPodLabels: []operatorv1alpha1.PodLabel{
+			presets: &operatorv1beta1.EnrichmentSpec{
+				ExtractPodLabels: []operatorv1beta1.PodLabel{
 					{Key: "app"},
 				},
 			},
@@ -267,8 +283,8 @@ func TestBuildPodLabelEnrichments(t *testing.T) {
 		},
 		{
 			name: "Enrichments enabled with key prefix",
-			presets: &operatorv1alpha1.EnrichmentSpec{
-				ExtractPodLabels: []operatorv1alpha1.PodLabel{
+			presets: &operatorv1beta1.EnrichmentSpec{
+				ExtractPodLabels: []operatorv1beta1.PodLabel{
 					{KeyPrefix: "app.kubernetes.io"},
 				},
 			},
@@ -282,8 +298,8 @@ func TestBuildPodLabelEnrichments(t *testing.T) {
 		},
 		{
 			name: "Enrichments enabled with multiple labels",
-			presets: &operatorv1alpha1.EnrichmentSpec{
-				ExtractPodLabels: []operatorv1alpha1.PodLabel{
+			presets: &operatorv1beta1.EnrichmentSpec{
+				ExtractPodLabels: []operatorv1beta1.PodLabel{
 					{Key: "app"},
 					{KeyPrefix: "app.kubernetes.io"},
 				},
@@ -312,7 +328,7 @@ func TestBuildPodLabelEnrichments(t *testing.T) {
 	}
 }
 
-func TestKymaInputNameProcessorConfig(t *testing.T) {
+func TestKymaInputNameProcessorStatements(t *testing.T) {
 	type args struct {
 		inputSource InputSourceType
 	}
@@ -320,91 +336,67 @@ func TestKymaInputNameProcessorConfig(t *testing.T) {
 	tests := []struct {
 		name string
 		args args
-		want *ResourceProcessor
+		want []TransformProcessorStatements
 	}{
 		{
 			name: "InputSourceRuntime",
 			args: args{inputSource: InputSourceRuntime},
-			want: &ResourceProcessor{
-				Attributes: []AttributeAction{
-					{
-						Action: AttributeActionInsert,
-						Key:    KymaInputNameAttribute,
-						Value:  string(InputSourceRuntime),
-					},
+			want: []TransformProcessorStatements{{
+				Statements: []string{
+					"set(resource.attributes[\"kyma.input.name\"], \"runtime\")",
 				},
-			},
+			}},
 		},
 		{
 			name: "InputSourcePrometheus",
 			args: args{inputSource: InputSourcePrometheus},
-			want: &ResourceProcessor{
-				Attributes: []AttributeAction{
-					{
-						Action: AttributeActionInsert,
-						Key:    KymaInputNameAttribute,
-						Value:  string(InputSourcePrometheus),
-					},
+			want: []TransformProcessorStatements{{
+				Statements: []string{
+					"set(resource.attributes[\"kyma.input.name\"], \"prometheus\")",
 				},
-			},
+			}},
 		},
 		{
 			name: "InputSourceIstio",
 			args: args{inputSource: InputSourceIstio},
-			want: &ResourceProcessor{
-				Attributes: []AttributeAction{
-					{
-						Action: AttributeActionInsert,
-						Key:    KymaInputNameAttribute,
-						Value:  string(InputSourceIstio),
-					},
+			want: []TransformProcessorStatements{{
+				Statements: []string{
+					"set(resource.attributes[\"kyma.input.name\"], \"istio\")",
 				},
-			},
+			}},
 		},
 		{
 			name: "InputSourceOTLP",
 			args: args{inputSource: InputSourceOTLP},
-			want: &ResourceProcessor{
-				Attributes: []AttributeAction{
-					{
-						Action: AttributeActionInsert,
-						Key:    KymaInputNameAttribute,
-						Value:  string(InputSourceOTLP),
-					},
+			want: []TransformProcessorStatements{{
+				Statements: []string{
+					"set(resource.attributes[\"kyma.input.name\"], \"otlp\")",
 				},
-			},
+			}},
 		},
 		{
 			name: "InputSourceKyma",
 			args: args{inputSource: InputSourceKyma},
-			want: &ResourceProcessor{
-				Attributes: []AttributeAction{
-					{
-						Action: AttributeActionInsert,
-						Key:    KymaInputNameAttribute,
-						Value:  string(InputSourceKyma),
-					},
+			want: []TransformProcessorStatements{{
+				Statements: []string{
+					"set(resource.attributes[\"kyma.input.name\"], \"kyma\")",
 				},
-			},
+			}},
 		},
 		{
 			name: "InputSourceK8sCluster",
 			args: args{inputSource: InputSourceK8sCluster},
-			want: &ResourceProcessor{
-				Attributes: []AttributeAction{
-					{
-						Action: AttributeActionInsert,
-						Key:    KymaInputNameAttribute,
-						Value:  string(InputSourceK8sCluster),
-					},
+			want: []TransformProcessorStatements{{
+				Statements: []string{
+					"set(resource.attributes[\"kyma.input.name\"], \"k8s_cluster\")",
 				},
-			},
+			}},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := KymaInputNameProcessorConfig(tt.args.inputSource); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("KymaInputNameProcessorConfig() = %v, want %v", got, tt.want)
+			if got := KymaInputNameProcessorStatements(tt.args.inputSource); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("KymaInputNameProcessorStatements() = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -20,13 +20,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/go-logr/zapr"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
+	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	istiosecurityclientv1 "istio.io/client-go/pkg/apis/security/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -44,18 +44,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	operatorv1alpha1 "github.com/kyma-project/telemetry-manager/apis/operator/v1alpha1"
+	operatorv1beta1 "github.com/kyma-project/telemetry-manager/apis/operator/v1beta1"
 	telemetryv1alpha1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1alpha1"
 	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 	"github.com/kyma-project/telemetry-manager/controllers/operator"
 	telemetrycontrollers "github.com/kyma-project/telemetry-manager/controllers/telemetry"
 	"github.com/kyma-project/telemetry-manager/internal/build"
+	"github.com/kyma-project/telemetry-manager/internal/cliflags"
 	"github.com/kyma-project/telemetry-manager/internal/config"
 	"github.com/kyma-project/telemetry-manager/internal/featureflags"
+	"github.com/kyma-project/telemetry-manager/internal/metrics"
 	"github.com/kyma-project/telemetry-manager/internal/overrides"
 	selfmonitorwebhook "github.com/kyma-project/telemetry-manager/internal/selfmonitor/webhook"
 	loggerutils "github.com/kyma-project/telemetry-manager/internal/utils/logger"
@@ -77,10 +79,13 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 
 	// Operator flags
-	certDir                   string
-	enableV1Beta1LogPipelines bool
-	highPriorityClassName     string
-	normalPriorityClassName   string
+	certDir                 string
+	highPriorityClassName   string
+	normalPriorityClassName string
+	clusterTrustBundleName  string
+	imagePullSecretName     string
+	additionalLabels        cliflags.Map
+	additionalAnnotations   cliflags.Map
 )
 
 const (
@@ -123,14 +128,24 @@ func init() {
 	utilruntime.Must(telemetryv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(operatorv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(istiosecurityclientv1.AddToScheme(scheme))
+	utilruntime.Must(telemetryv1beta1.AddToScheme(scheme))
+	utilruntime.Must(operatorv1beta1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
 func main() {
+	zapLogger, err := setupSetupLog()
+	if err != nil {
+		log.Panicf("failed to setup zap logger: %v", err)
+	}
+
 	if err := run(); err != nil {
 		setupLog.Error(err, "Manager exited with error")
+		zapLogger.Sync() //nolint:errcheck // if flushing logs fails there is nothing else	we can do
 		os.Exit(1)
 	}
+
+	zapLogger.Sync() //nolint:errcheck // if flushing logs fails there is nothing else	we can do
 }
 
 func run() error {
@@ -142,16 +157,6 @@ func run() error {
 		return fmt.Errorf("failed to parse environment variables: %w", err)
 	}
 
-	overrides.AtomicLevel().SetLevel(zapcore.InfoLevel)
-
-	zapLogger, err := loggerutils.New(overrides.AtomicLevel())
-	if err != nil {
-		return fmt.Errorf("failed to create logger: %w", err)
-	}
-	defer zapLogger.Sync() //nolint:errcheck // if flusing logs fails there is nothing else	we can do
-
-	ctrl.SetLogger(zapr.NewLogger(zapLogger))
-
 	logBuildAndProcessInfo()
 
 	globals := config.NewGlobal(
@@ -159,9 +164,13 @@ func run() error {
 		config.WithTargetNamespace(envCfg.TargetNamespace),
 		config.WithOperateInFIPSMode(envCfg.OperateInFIPSMode),
 		config.WithVersion(build.GitTag()),
+		config.WithImagePullSecretName(imagePullSecretName),
+		config.WithClusterTrustBundleName(clusterTrustBundleName),
+		config.WithAdditionalLabels(additionalLabels),
+		config.WithAdditionalAnnotations(additionalAnnotations),
 	)
 
-	if err = globals.Validate(); err != nil {
+	if err := globals.Validate(); err != nil {
 		return fmt.Errorf("global configuration validation failed: %w", err)
 	}
 
@@ -189,6 +198,19 @@ func run() error {
 	}
 
 	return nil
+}
+
+func setupSetupLog() (*zap.Logger, error) {
+	overrides.AtomicLevel().SetLevel(zapcore.InfoLevel)
+
+	zapLogger, err := loggerutils.New(overrides.AtomicLevel())
+	if err != nil {
+		return nil, err
+	}
+
+	ctrl.SetLogger(zapr.NewLogger(zapLogger))
+
+	return zapLogger, nil
 }
 
 func setupControllersAndWebhooks(mgr manager.Manager, globals config.Global, envCfg envConfig) error {
@@ -273,7 +295,7 @@ func setupManager(globals config.Global) (manager.Manager, error) {
 				&corev1.Service{}:             {Field: setNamespaceFieldSelector(globals)},
 				&networkingv1.NetworkPolicy{}: {Field: setNamespaceFieldSelector(globals)},
 				&corev1.Secret{}:              {Field: setNamespaceFieldSelector(globals)},
-				&operatorv1alpha1.Telemetry{}: {Field: setNamespaceFieldSelector(globals)},
+				&operatorv1beta1.Telemetry{}:  {Field: setNamespaceFieldSelector(globals)},
 			},
 		},
 		Client: client.Options{
@@ -292,39 +314,27 @@ func setupManager(globals config.Global) (manager.Manager, error) {
 }
 
 func logBuildAndProcessInfo() {
-	buildInfoGauge := promauto.With(metrics.Registry).NewGauge(prometheus.GaugeOpts{
-		Namespace:   "telemetry",
-		Subsystem:   "",
-		Name:        "build_info",
-		Help:        "Build information of the Telemetry Manager",
-		ConstLabels: build.InfoMap(),
-	})
-	buildInfoGauge.Set(1)
+	metrics.BuildInfo.Set(1)
 
 	setupLog.Info("Starting Telemetry Manager", "Build info:", build.InfoMap())
 
-	featureFlagsGaugeVec := promauto.With(metrics.Registry).NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "telemetry",
-		Name:      "feature_flags_info",
-		Help:      "Enabled feature flags in the Telemetry Manager",
-	}, []string{"flag"})
-
 	for _, flg := range featureflags.EnabledFlags() {
-		featureFlagsGaugeVec.WithLabelValues(flg.String()).Set(1)
+		metrics.FeatureFlagsInfo.WithLabelValues(flg.String()).Set(1)
 		setupLog.Info("Enabled feature flag", "flag", flg)
 	}
 }
 
-func initializeFeatureFlags() {
-	featureflags.Set(featureflags.V1Beta1, enableV1Beta1LogPipelines)
-}
+func initializeFeatureFlags() {} // Placeholder for future feature flag initializations.
 
 func parseFlags() {
-	flag.BoolVar(&enableV1Beta1LogPipelines, "enable-v1beta1-log-pipelines", false, "Enable v1beta1 log pipelines CRD")
 	flag.StringVar(&certDir, "cert-dir", ".", "Webhook TLS certificate directory")
 
 	flag.StringVar(&highPriorityClassName, "high-priority-class-name", "", "High priority class name used by managed DaemonSets")
 	flag.StringVar(&normalPriorityClassName, "normal-priority-class-name", "", "Normal priority class name used by managed Deployments")
+	flag.StringVar(&clusterTrustBundleName, "cluster-trust-bundle-name", "", "The name ClusterTrustBundle resource")
+	flag.StringVar(&imagePullSecretName, "image-pull-secret-name", "", "The image pull secret name to use for pulling images of all created workloads (agents, gateways, self-monitor)")
+	flag.Var(&additionalLabels, "additional-label", "Additional label to add to all created resources in key=value format")
+	flag.Var(&additionalAnnotations, "additional-annotation", "Additional annotation to add to all created resources in key=value format")
 
 	flag.Parse()
 }
@@ -334,30 +344,24 @@ func setupAdmissionsWebhooks(mgr manager.Manager) error {
 		return fmt.Errorf("failed to setup metric pipeline v1alpha1 webhook: %w", err)
 	}
 
-	if featureflags.IsEnabled(featureflags.V1Beta1) {
-		if err := metricpipelinewebhookv1beta1.SetupWithManager(mgr); err != nil {
-			return fmt.Errorf("failed to setup metric pipeline v1beta1 webhook: %w", err)
-		}
+	if err := metricpipelinewebhookv1beta1.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to setup metric pipeline v1beta1 webhook: %w", err)
 	}
 
 	if err := tracepipelinewebhookv1alpha1.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed to setup trace pipeline v1alpha1 webhook: %w", err)
 	}
 
-	if featureflags.IsEnabled(featureflags.V1Beta1) {
-		if err := tracepipelinewebhookv1beta1.SetupWithManager(mgr); err != nil {
-			return fmt.Errorf("failed to setup trace pipeline v1beta1 webhook: %w", err)
-		}
+	if err := tracepipelinewebhookv1beta1.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to setup trace pipeline v1beta1 webhook: %w", err)
 	}
 
 	if err := logpipelinewebhookv1alpha1.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed to setup log pipeline v1alpha1 webhook: %w", err)
 	}
 
-	if featureflags.IsEnabled(featureflags.V1Beta1) {
-		if err := logpipelinewebhookv1beta1.SetupWithManager(mgr); err != nil {
-			return fmt.Errorf("failed to setup log pipeline v1beta1 webhook: %w", err)
-		}
+	if err := logpipelinewebhookv1beta1.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to setup log pipeline v1beta1 webhook: %w", err)
 	}
 
 	return nil
@@ -464,35 +468,32 @@ func setupMetricPipelineController(globals config.Global, cfg envConfig, mgr man
 }
 
 func setupConversionWebhooks(mgr manager.Manager) error {
-	if featureflags.IsEnabled(featureflags.V1Beta1) {
-		setupLog.Info("Registering conversion webhooks for LogPipelines")
-		utilruntime.Must(telemetryv1beta1.AddToScheme(scheme))
+	setupLog.Info("Registering conversion webhooks for LogPipelines")
 
-		if err := ctrl.NewWebhookManagedBy(mgr).
-			For(&telemetryv1alpha1.LogPipeline{}).
-			Complete(); err != nil {
-			return fmt.Errorf("failed to create v1alpha1 conversion webhook: %w", err)
-		}
+	if err := ctrl.NewWebhookManagedBy(mgr).
+		For(&telemetryv1alpha1.LogPipeline{}).
+		Complete(); err != nil {
+		return fmt.Errorf("failed to create v1alpha1 conversion webhook: %w", err)
+	}
 
-		if err := ctrl.NewWebhookManagedBy(mgr).
-			For(&telemetryv1beta1.LogPipeline{}).
-			Complete(); err != nil {
-			return fmt.Errorf("failed to create v1beta1 conversion webhook: %w", err)
-		}
+	if err := ctrl.NewWebhookManagedBy(mgr).
+		For(&telemetryv1beta1.LogPipeline{}).
+		Complete(); err != nil {
+		return fmt.Errorf("failed to create v1beta1 conversion webhook: %w", err)
+	}
 
-		setupLog.Info("Registering conversion webhooks for MetricPipelines")
+	setupLog.Info("Registering conversion webhooks for MetricPipelines")
 
-		if err := ctrl.NewWebhookManagedBy(mgr).
-			For(&telemetryv1alpha1.MetricPipeline{}).
-			Complete(); err != nil {
-			return fmt.Errorf("failed to create v1alpha1 conversion webhook: %w", err)
-		}
+	if err := ctrl.NewWebhookManagedBy(mgr).
+		For(&telemetryv1alpha1.MetricPipeline{}).
+		Complete(); err != nil {
+		return fmt.Errorf("failed to create v1alpha1 conversion webhook: %w", err)
+	}
 
-		if err := ctrl.NewWebhookManagedBy(mgr).
-			For(&telemetryv1beta1.MetricPipeline{}).
-			Complete(); err != nil {
-			return fmt.Errorf("failed to create v1beta1 conversion webhook: %w", err)
-		}
+	if err := ctrl.NewWebhookManagedBy(mgr).
+		For(&telemetryv1beta1.MetricPipeline{}).
+		Complete(); err != nil {
+		return fmt.Errorf("failed to create v1beta1 conversion webhook: %w", err)
 	}
 
 	return nil
