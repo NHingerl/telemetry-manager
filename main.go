@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/go-logr/zapr"
@@ -32,13 +33,11 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -58,7 +57,6 @@ import (
 	"github.com/kyma-project/telemetry-manager/internal/cliflags"
 	"github.com/kyma-project/telemetry-manager/internal/config"
 	"github.com/kyma-project/telemetry-manager/internal/featureflags"
-	"github.com/kyma-project/telemetry-manager/internal/istiostatus"
 	"github.com/kyma-project/telemetry-manager/internal/metrics"
 	"github.com/kyma-project/telemetry-manager/internal/overrides"
 	"github.com/kyma-project/telemetry-manager/internal/resources/names"
@@ -90,9 +88,11 @@ var (
 	additionalLabels        cliflags.Map
 	additionalAnnotations   cliflags.Map
 	deployOTLPGateway       bool
+	unlimitedPipelines      bool
 )
 
 const (
+	cacheSyncPeriod    = 1 * time.Minute
 	webhookServiceName = names.ManagerWebhookService
 
 	healthProbePort = 8081
@@ -111,6 +111,8 @@ type envConfig struct {
 	OTelCollectorImage string `env:"OTEL_COLLECTOR_IMAGE"`
 	// SelfMonitorImage is the image used for the self-monitoring deployment. This is a customized Prometheus image.
 	SelfMonitorImage string `env:"SELF_MONITOR_IMAGE"`
+	// SelfMonitorFIPSImage is the image used for the self-monitoring deployment in FIPS mode. This is a Prometheus FIPS 140-2 compliant image.
+	SelfMonitorFIPSImage string `env:"SELF_MONITOR_FIPS_IMAGE"`
 	// AlpineImage is the image used for the chown init containers.
 	AlpineImage string `env:"ALPINE_IMAGE"`
 	// ImagePullSecret is the name of the image pull secret to use for pulling images of all created workloads (agents, gateways, self-monitor).
@@ -173,6 +175,7 @@ func run() error {
 		config.WithAdditionalLabels(additionalLabels),
 		config.WithAdditionalAnnotations(additionalAnnotations),
 		config.WithDeployOTLPGateway(featureflags.IsEnabled(featureflags.DeployOTLPGateway)),
+		config.WithUnlimitedPipelines(featureflags.IsEnabled(featureflags.UnlimitedPipelineCount)),
 	)
 
 	if err := globals.Validate(); err != nil {
@@ -274,36 +277,7 @@ func setupControllersAndWebhooks(mgr manager.Manager, globals config.Global, env
 }
 
 func setupManager(globals config.Global) (manager.Manager, error) {
-	restConfig := ctrl.GetConfigOrDie()
-
-	discoveryClient, err := discovery.NewDiscoveryClientForConfig(restConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create discovery client: %w", err)
-	}
-
-	isIstioActive := istiostatus.NewChecker(discoveryClient).IsIstioActive(context.Background())
-
-	// The operator handles various resource that are namespace-scoped, and additionally some resources that are cluster-scoped (clusterroles, clusterrolebindings, etc.).
-	// For namespace-scoped resources we want to restrict the operator permissions to only fetch resources from a given namespace.
-	cacheOptions := map[client.Object]cache.ByObject{
-		&appsv1.Deployment{}:          {Field: setNamespaceFieldSelector(globals)},
-		&appsv1.ReplicaSet{}:          {Field: setNamespaceFieldSelector(globals)},
-		&appsv1.DaemonSet{}:           {Field: setNamespaceFieldSelector(globals)},
-		&corev1.ConfigMap{}:           {Namespaces: setConfigMapNamespaceFieldSelector(globals)},
-		&corev1.ServiceAccount{}:      {Field: setNamespaceFieldSelector(globals)},
-		&corev1.Service{}:             {Field: setNamespaceFieldSelector(globals)},
-		&networkingv1.NetworkPolicy{}: {Field: setNamespaceFieldSelector(globals)},
-		&corev1.Secret{}:              {Transform: secretCacheTransform},
-		&operatorv1beta1.Telemetry{}:  {Field: setNamespaceFieldSelector(globals)},
-		&rbacv1.Role{}:                {Field: setNamespaceFieldSelector(globals)},
-		&rbacv1.RoleBinding{}:         {Field: setNamespaceFieldSelector(globals)},
-	}
-
-	if isIstioActive {
-		cacheOptions[&istiosecurityclientv1.PeerAuthentication{}] = cache.ByObject{Field: setNamespaceFieldSelector(globals)}
-	}
-
-	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                  scheme,
 		Metrics:                 metricsserver.Options{BindAddress: fmt.Sprintf(":%d", metricsPort)},
 		HealthProbeBindAddress:  fmt.Sprintf(":%d", healthProbePort),
@@ -316,7 +290,21 @@ func setupManager(globals config.Global) (manager.Manager, error) {
 			CertDir: certDir,
 		}),
 		Cache: cache.Options{
-			ByObject: cacheOptions,
+			SyncPeriod: new(cacheSyncPeriod),
+
+			// The operator handles various resource that are namespace-scoped, and additionally some resources that are cluster-scoped (clusterroles, clusterrolebindings, etc.).
+			// For namespace-scoped resources we want to restrict the operator permissions to only fetch resources from a given namespace.
+			ByObject: map[client.Object]cache.ByObject{
+				&appsv1.Deployment{}:          {Field: setNamespaceFieldSelector(globals)},
+				&appsv1.ReplicaSet{}:          {Field: setNamespaceFieldSelector(globals)},
+				&appsv1.DaemonSet{}:           {Field: setNamespaceFieldSelector(globals)},
+				&corev1.ConfigMap{}:           {Namespaces: setConfigMapNamespaceFieldSelector(globals)},
+				&corev1.ServiceAccount{}:      {Field: setNamespaceFieldSelector(globals)},
+				&corev1.Service{}:             {Field: setNamespaceFieldSelector(globals)},
+				&networkingv1.NetworkPolicy{}: {Field: setNamespaceFieldSelector(globals)},
+				&corev1.Secret{}:              {Field: setNamespaceFieldSelector(globals)},
+				&operatorv1beta1.Telemetry{}:  {Field: setNamespaceFieldSelector(globals)},
+			},
 		},
 		Client: client.Options{
 			Cache: &client.CacheOptions{
@@ -347,6 +335,7 @@ func logBuildAndProcessInfo() {
 func initializeFeatureFlags() {
 	// Placeholder for future feature flag initializations.
 	featureflags.Set(featureflags.DeployOTLPGateway, deployOTLPGateway)
+	featureflags.Set(featureflags.UnlimitedPipelineCount, unlimitedPipelines)
 }
 
 func parseFlags() {
@@ -360,6 +349,7 @@ func parseFlags() {
 	flag.Var(&additionalAnnotations, "additional-annotation", "Additional annotation to add to all created resources in key=value format")
 
 	flag.BoolVar(&deployOTLPGateway, "deploy-otlp-gateway", false, "Enable deploying unified OTLP gateway")
+	flag.BoolVar(&unlimitedPipelines, "unlimited-pipelines", false, "Allow unlimited number of OTEL pipelines")
 
 	flag.Parse()
 }
@@ -395,11 +385,17 @@ func setupAdmissionsWebhooks(mgr manager.Manager) error {
 func setupTelemetryController(globals config.Global, cfg envConfig, webhookCertConfig webhookcert.Config, mgr manager.Manager) error {
 	setupLog.Info("Setting up telemetry controller")
 
+	selectedSelfMonitorImage := cfg.SelfMonitorImage
+	if globals.OperateInFIPSMode() {
+		selectedSelfMonitorImage = cfg.SelfMonitorFIPSImage
+		setupLog.Info("Operating in FIPS mode, therefore a FIPS compliant self-monitor image is used", "image", selectedSelfMonitorImage)
+	}
+
 	telemetryController := operator.NewTelemetryController(
 		operator.TelemetryControllerConfig{
 			Global:                            globals,
 			SelfMonitorAlertmanagerWebhookURL: fmt.Sprintf("%s.%s.svc", webhookServiceName, globals.ManagerNamespace()),
-			SelfMonitorImage:                  cfg.SelfMonitorImage,
+			SelfMonitorImage:                  selectedSelfMonitorImage,
 			SelfMonitorPriorityClassName:      normalPriorityClassName,
 			WebhookCert:                       webhookCertConfig,
 		},
@@ -570,20 +566,4 @@ func createWebhookConfig(globals config.Global) webhookcert.Config {
 			},
 		},
 	)
-}
-
-// secretCacheTransform removes the Data, StringData, Annotations, and Labels fields from the Secret object before caching it.
-// This is done to reduce memory usage and anyway the client cache is disabled for Secrets which means read requests will always go to the API server.
-func secretCacheTransform(object any) (any, error) {
-	secret, ok := object.(*corev1.Secret)
-	if !ok {
-		return nil, fmt.Errorf("expected Secret object but got: %T", object)
-	}
-
-	secret.Data = nil
-	secret.StringData = nil
-	secret.Annotations = nil
-	secret.Labels = nil
-
-	return secret, nil
 }
