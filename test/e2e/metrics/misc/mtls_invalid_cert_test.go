@@ -18,7 +18,7 @@ import (
 )
 
 func TestMTLSInvalidCert(t *testing.T) {
-	suite.RegisterTestCase(t, suite.LabelMetricsMisc, suite.LabelMTLS)
+	suite.SetupTest(t, suite.LabelMetrics, suite.LabelMisc, suite.LabelMTLS)
 
 	var (
 		uniquePrefix = unique.Prefix()

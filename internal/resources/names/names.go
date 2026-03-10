@@ -50,8 +50,11 @@ const (
 	TracePipelineLock  = telemetryPrefix + "tracepipeline-lock"
 	TracePipelineSync  = telemetryPrefix + "tracepipeline-sync"
 
-	OverrideConfigMap = telemetryPrefix + "override-config"
+	OverrideConfigMap = telemetryPrefix + "overrides"
 	DefaultTelemetry  = "default" // default module resource must be named "default"
+
+	LogPipelineCRD    = "logpipelines.telemetry.kyma-project.io"
+	MetricPipelineCRD = "metricpipelines.telemetry.kyma-project.io"
 )
 
 // MetricsServiceName returns the metrics service name for a given component name

@@ -14,6 +14,7 @@ import (
 	"github.com/kyma-project/telemetry-manager/test/testkit/assert"
 	kitk8s "github.com/kyma-project/telemetry-manager/test/testkit/k8s"
 	kitk8sobjects "github.com/kyma-project/telemetry-manager/test/testkit/k8s/objects"
+	"github.com/kyma-project/telemetry-manager/test/testkit/kubeprep"
 	kitkyma "github.com/kyma-project/telemetry-manager/test/testkit/kyma"
 	kitbackend "github.com/kyma-project/telemetry-manager/test/testkit/mocks/backend"
 	"github.com/kyma-project/telemetry-manager/test/testkit/mocks/prommetricgen"
@@ -25,16 +26,18 @@ import (
 
 func TestHealthy(t *testing.T) {
 	tests := []struct {
-		labelPrefix string
-		pipeline    func(includeNs string, backend *kitbackend.Backend) client.Object
-		generator   func(ns string) []client.Object
-		assert      func(t *testing.T, ns string, backend *kitbackend.Backend, pipelineName string)
+		name      string
+		component string
+		pipeline  func(pipelineName, includeNs string, backend *kitbackend.Backend) client.Object
+		generator func(ns string) []client.Object
+		assert    func(t *testing.T, ns string, backend *kitbackend.Backend, pipelineName string)
 	}{
 		{
-			labelPrefix: suite.LabelSelfMonitorLogAgentPrefix,
-			pipeline: func(includeNs string, backend *kitbackend.Backend) client.Object {
+			name:      "log-agent",
+			component: suite.LabelLogAgent,
+			pipeline: func(pipelineName, includeNs string, backend *kitbackend.Backend) client.Object {
 				p := testutils.NewLogPipelineBuilder().
-					WithName(suite.LabelSelfMonitorLogAgentPrefix).
+					WithName(pipelineName).
 					WithInput(testutils.BuildLogPipelineRuntimeInput(testutils.IncludeNamespaces(includeNs))).
 					WithOTLPOutput(testutils.OTLPEndpoint(backend.EndpointHTTP())).
 					Build()
@@ -55,10 +58,11 @@ func TestHealthy(t *testing.T) {
 			},
 		},
 		{
-			labelPrefix: suite.LabelSelfMonitorLogGatewayPrefix,
-			pipeline: func(includeNs string, backend *kitbackend.Backend) client.Object {
+			name:      "log-gateway",
+			component: suite.LabelLogGateway,
+			pipeline: func(pipelineName, includeNs string, backend *kitbackend.Backend) client.Object {
 				p := testutils.NewLogPipelineBuilder().
-					WithName(suite.LabelSelfMonitorLogGatewayPrefix).
+					WithName(pipelineName).
 					WithInput(testutils.BuildLogPipelineOTLPInput(testutils.IncludeNamespaces(includeNs))).
 					WithOTLPOutput(testutils.OTLPEndpoint(backend.EndpointHTTP())).
 					Build()
@@ -78,10 +82,11 @@ func TestHealthy(t *testing.T) {
 			},
 		},
 		{
-			labelPrefix: suite.LabelSelfMonitorFluentBitPrefix,
-			pipeline: func(includeNs string, backend *kitbackend.Backend) client.Object {
+			name:      "fluent-bit",
+			component: suite.LabelFluentBit,
+			pipeline: func(pipelineName, includeNs string, backend *kitbackend.Backend) client.Object {
 				p := testutils.NewLogPipelineBuilder().
-					WithName(suite.LabelSelfMonitorFluentBitPrefix).
+					WithName(pipelineName).
 					WithRuntimeInput(true, testutils.IncludeNamespaces(includeNs)).
 					WithHTTPOutput(testutils.HTTPHost(backend.Host()), testutils.HTTPPort(backend.Port())).
 					Build()
@@ -101,10 +106,11 @@ func TestHealthy(t *testing.T) {
 			},
 		},
 		{
-			labelPrefix: suite.LabelSelfMonitorMetricGatewayPrefix,
-			pipeline: func(includeNs string, backend *kitbackend.Backend) client.Object {
+			name:      "metric-gateway",
+			component: suite.LabelMetricGateway,
+			pipeline: func(pipelineName, includeNs string, backend *kitbackend.Backend) client.Object {
 				p := testutils.NewMetricPipelineBuilder().
-					WithName(suite.LabelSelfMonitorMetricGatewayPrefix).
+					WithName(pipelineName).
 					WithOTLPOutput(testutils.OTLPEndpoint(backend.EndpointHTTP())).
 					Build()
 
@@ -123,10 +129,11 @@ func TestHealthy(t *testing.T) {
 			},
 		},
 		{
-			labelPrefix: suite.LabelSelfMonitorMetricAgentPrefix,
-			pipeline: func(includeNs string, backend *kitbackend.Backend) client.Object {
+			name:      "metric-agent",
+			component: suite.LabelMetricAgent,
+			pipeline: func(pipelineName, includeNs string, backend *kitbackend.Backend) client.Object {
 				p := testutils.NewMetricPipelineBuilder().
-					WithName(suite.LabelSelfMonitorMetricAgentPrefix).
+					WithName(pipelineName).
 					WithPrometheusInput(true, testutils.IncludeNamespaces(includeNs)).
 					WithOTLPOutput(testutils.OTLPEndpoint(backend.EndpointHTTP())).
 					Build()
@@ -150,10 +157,11 @@ func TestHealthy(t *testing.T) {
 			},
 		},
 		{
-			labelPrefix: suite.LabelSelfMonitorTracesPrefix,
-			pipeline: func(includeNs string, backend *kitbackend.Backend) client.Object {
+			name:      "traces",
+			component: suite.LabelTraces,
+			pipeline: func(pipelineName, includeNs string, backend *kitbackend.Backend) client.Object {
 				p := testutils.NewTracePipelineBuilder().
-					WithName(suite.LabelSelfMonitorTracesPrefix).
+					WithName(pipelineName).
 					WithOTLPOutput(testutils.OTLPEndpoint(backend.EndpointHTTP())).
 					Build()
 
@@ -173,18 +181,35 @@ func TestHealthy(t *testing.T) {
 		},
 	}
 
+	// Tests run once per test case. FIPS mode is determined by environment (FIPS_IMAGE_AVAILABLE).
+	// FluentBit tests always run in no-FIPS mode via WithOverrideFIPSMode(false).
 	for _, tc := range tests {
-		t.Run(tc.labelPrefix, func(t *testing.T) {
-			suite.RegisterTestCase(t, label(tc.labelPrefix, suite.LabelSelfMonitorHealthySuffix))
+		t.Run(tc.name, func(t *testing.T) {
+			// Labels: selfmonitor + component + scenario
+			labels := []string{
+				suite.LabelSelfMonitor,
+				tc.component,
+				suite.LabelHealthy,
+			}
+
+			// FluentBit doesn't support FIPS mode
+			var opts []kubeprep.Option
+			if isFluentBit(tc.component) {
+				opts = append(opts, kubeprep.WithOverrideFIPSMode(false))
+			}
+
+			suite.SetupTestWithOptions(t, labels, opts...)
+
+			pipelineName := fmt.Sprintf("selfmonitor-%s", tc.name)
 
 			var (
-				uniquePrefix = unique.Prefix(tc.labelPrefix)
+				uniquePrefix = unique.Prefix(tc.name)
 				backendNs    = uniquePrefix("backend")
 				genNs        = uniquePrefix("gen")
 			)
 
-			backend := kitbackend.New(backendNs, signalType(tc.labelPrefix))
-			pipeline := tc.pipeline(genNs, backend)
+			backend := kitbackend.New(backendNs, signalTypeForComponent(tc.component))
+			pipeline := tc.pipeline(pipelineName, genNs, backend)
 			generator := tc.generator(genNs)
 
 			resources := []client.Object{

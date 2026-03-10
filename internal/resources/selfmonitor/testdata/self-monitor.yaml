@@ -79,6 +79,7 @@ spec:
         app.kubernetes.io/name: telemetry-self-monitor
         app.kubernetes.io/part-of: telemetry
         kyma-project.io/module: telemetry
+        networking.kyma-project.io/metrics-scraping: allowed
         sidecar.istio.io/inject: "false"
         test-label-key: test-label-value
     spec:
@@ -162,21 +163,76 @@ metadata:
     app.kubernetes.io/name: telemetry-self-monitor
     app.kubernetes.io/part-of: telemetry
     kyma-project.io/module: telemetry
-  name: telemetry-self-monitor
+  name: kyma-project.io--telemetry-self-monitor
   namespace: my-namespace
 spec:
   egress:
-  - to:
-    - ipBlock:
-        cidr: 0.0.0.0/0
-    - ipBlock:
-        cidr: ::/0
+  - ports:
+    - port: 2020
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: fluent-bit
+  - ports:
+    - port: 8888
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: telemetry-metric-agent
+  - ports:
+    - port: 8888
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: telemetry-log-agent
+  - ports:
+    - port: 8888
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: gateway
+  - ports:
+    - port: 9443
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: manager
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: telemetry-self-monitor
+  policyTypes:
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/component: monitor
+    app.kubernetes.io/managed-by: telemetry-manager
+    app.kubernetes.io/name: telemetry-self-monitor
+    app.kubernetes.io/part-of: telemetry
+    kyma-project.io/module: telemetry
+  name: kyma-project.io--telemetry-self-monitor-metrics
+  namespace: my-namespace
+spec:
   ingress:
   - from:
-    - ipBlock:
-        cidr: 0.0.0.0/0
-    - ipBlock:
-        cidr: ::/0
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: manager
+    ports:
+    - port: 9090
+      protocol: TCP
+  - from:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          networking.kyma-project.io/metrics-scraping: allowed
     ports:
     - port: 9090
       protocol: TCP
@@ -185,7 +241,6 @@ spec:
       app.kubernetes.io/name: telemetry-self-monitor
   policyTypes:
   - Ingress
-  - Egress
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

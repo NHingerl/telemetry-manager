@@ -25,7 +25,7 @@ import (
 )
 
 func TestTelemetry(t *testing.T) {
-	suite.RegisterTestCase(t, suite.LabelTelemetry)
+	suite.SetupTest(t, suite.LabelTelemetry)
 
 	var (
 		uniquePrefix = unique.Prefix()
@@ -87,7 +87,7 @@ func assertTelemetryCRExistsAndHasCorrectEndpointsInStatus(logGRPCEndpoint strin
 }
 
 func TestTelemetryWarning(t *testing.T) {
-	suite.RegisterTestCase(t, suite.LabelTelemetry)
+	suite.SetupTest(t, suite.LabelTelemetry)
 
 	var (
 		uniquePrefix = unique.Prefix("warning")
@@ -121,7 +121,7 @@ func TestTelemetryWarning(t *testing.T) {
 
 // Decide how to execute it as we delete the telemetry CR in the end of the test
 func TestTelemetryDeletionBlocking(t *testing.T) {
-	suite.RegisterTestCase(t, suite.LabelTelemetry)
+	suite.SetupTest(t, suite.LabelTelemetry)
 
 	var (
 		uniquePrefix = unique.Prefix("delete-blocking")
@@ -141,7 +141,12 @@ func TestTelemetryDeletionBlocking(t *testing.T) {
 	Expect(kitk8s.CreateObjects(t, resources...)).To(Succeed())
 
 	var telemetry operatorv1beta1.Telemetry
-	Expect(suite.K8sClient.Get(suite.Ctx, kitkyma.TelemetryName, &telemetry)).Should(Succeed())
+
+	Eventually(func(g Gomega) {
+		g.Expect(suite.K8sClient.Get(suite.Ctx, kitkyma.TelemetryName, &telemetry)).Should(Succeed())
+		g.Expect(telemetry.ObjectMeta.Finalizers).ShouldNot(BeEmpty())
+	}, periodic.EventuallyTimeout, periodic.DefaultInterval).Should(Succeed())
+
 	Expect(kitk8s.ForceDeleteObjects(t, &telemetry)).Should(Succeed())
 
 	assertTelemetryCRDeletionIsBlocked(pipelineName)
