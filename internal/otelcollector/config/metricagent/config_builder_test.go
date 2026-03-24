@@ -11,6 +11,7 @@ import (
 
 	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 	commonresources "github.com/kyma-project/telemetry-manager/internal/resources/common"
+	telemetryutils "github.com/kyma-project/telemetry-manager/internal/utils/telemetry"
 	testutils "github.com/kyma-project/telemetry-manager/internal/utils/test"
 )
 
@@ -28,6 +29,7 @@ func TestBuildConfig(t *testing.T) {
 
 		// istioActive indicates if the "cluster" has an active istio installation or not. Not to be confused with the IstioInput in a pipeline
 		istioActive bool
+		vpaActive   bool
 	}{
 		{
 			name:              "pipeline with runtime input only and otel service enrichment",
@@ -37,6 +39,22 @@ func TestBuildConfig(t *testing.T) {
 				testutils.NewMetricPipelineBuilder().
 					WithName("test").
 					WithRuntimeInput(true).
+					WithPrometheusInput(false).
+					WithIstioInput(false).
+					WithOTLPOutput().
+					Build(),
+			},
+		},
+		{
+			name:           "pipeline with runtime input only and VPA is active",
+			goldenFileName: "vpa-active.yaml",
+			vpaActive:      true,
+			pipelines: []telemetryv1beta1.MetricPipeline{
+				testutils.NewMetricPipelineBuilder().
+					WithName("test").
+					WithRuntimeInput(true).
+					WithPrometheusInput(false).
+					WithIstioInput(false).
 					WithOTLPOutput().
 					Build(),
 			},
@@ -383,7 +401,10 @@ func TestBuildConfig(t *testing.T) {
 					WithRuntimeInput(true).
 					WithOTLPOutput(testutils.OTLPEndpoint("https://localhost")).
 					WithFilter(telemetryv1beta1.FilterSpec{
-						Conditions: []string{"metric.type == METRIC_DATA_TYPE_SUMMARY"},
+						Conditions: []string{"HasAttrOnDatapoint(\"http.method\",\"GET\""},
+					}).
+					WithFilter(telemetryv1beta1.FilterSpec{
+						Conditions: []string{"datapoint.flags == kyma"},
 					}).Build(),
 				testutils.NewMetricPipelineBuilder().
 					WithName("test2").
@@ -440,6 +461,8 @@ func TestBuildConfig(t *testing.T) {
 				InstrumentationScopeVersion: "main",
 				IstioActive:                 tt.istioActive,
 				ServiceEnrichment:           tt.serviceEnrichment,
+				VpaActive:                   tt.vpaActive,
+				CollectionIntervals:         telemetryutils.ResolveMetricCollectionIntervals(nil),
 			}
 			config, _, err := sut.Build(t.Context(), tt.pipelines, buildOptions)
 			require.NoError(t, err)
@@ -470,6 +493,7 @@ func TestBuildConfigShuffled(t *testing.T) {
 	buildOptions := BuildOptions{
 		IstioCertPath:               "/etc/istio-output-certs",
 		InstrumentationScopeVersion: "main",
+		CollectionIntervals:         telemetryutils.ResolveMetricCollectionIntervals(nil),
 	}
 
 	pipelines := []telemetryv1beta1.MetricPipeline{

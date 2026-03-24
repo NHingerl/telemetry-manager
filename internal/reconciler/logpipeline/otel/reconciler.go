@@ -15,6 +15,7 @@ import (
 	telemetryv1beta1 "github.com/kyma-project/telemetry-manager/apis/telemetry/v1beta1"
 	"github.com/kyma-project/telemetry-manager/internal/config"
 	"github.com/kyma-project/telemetry-manager/internal/errortypes"
+	"github.com/kyma-project/telemetry-manager/internal/k8sclients"
 	"github.com/kyma-project/telemetry-manager/internal/metrics"
 	"github.com/kyma-project/telemetry-manager/internal/otelcollector/config/common"
 	"github.com/kyma-project/telemetry-manager/internal/otelcollector/config/logagent"
@@ -46,6 +47,8 @@ type Reconciler struct {
 	gatewayConfigBuilder      GatewayConfigBuilder
 	gatewayProber             Prober
 	istioStatusChecker        IstioStatusChecker
+	vpaStatusChecker          VpaStatusChecker
+	nodeSizeTracker           NodeSizeTracker
 	pipelineLock              PipelineLock
 	pipelineValidator         *Validator
 	errToMessageConverter     ErrorToMessageConverter
@@ -128,6 +131,20 @@ func WithGatewayProber(prober Prober) Option {
 func WithIstioStatusChecker(checker IstioStatusChecker) Option {
 	return func(r *Reconciler) {
 		r.istioStatusChecker = checker
+	}
+}
+
+// WithVpaStatusChecker sets the VPA status checker.
+func WithVpaStatusChecker(checker VpaStatusChecker) Option {
+	return func(r *Reconciler) {
+		r.vpaStatusChecker = checker
+	}
+}
+
+// WithNodeSizeTracker sets the node size tracker.
+func WithNodeSizeTracker(tracker NodeSizeTracker) Option {
+	return func(r *Reconciler) {
+		r.nodeSizeTracker = tracker
 	}
 }
 
@@ -228,7 +245,12 @@ func (r *Reconciler) doReconcile(ctx context.Context, pipeline *telemetryv1beta1
 	if len(reconcilablePipelinesRequiringAgents) == 0 {
 		logf.FromContext(ctx).V(1).Info("cleaning up log agent resources: no log pipelines require an agent")
 
-		if err = r.agentApplierDeleter.DeleteResources(ctx, r.Client); err != nil {
+		vpaCRDExists, err := r.vpaStatusChecker.VpaCRDExists(ctx, r.Client)
+		if err != nil {
+			return fmt.Errorf("failed to check VPA status: %w", err)
+		}
+
+		if err = r.agentApplierDeleter.DeleteResources(ctx, r.Client, vpaCRDExists); err != nil {
 			return fmt.Errorf("failed to delete agent resources: %w", err)
 		}
 	}
@@ -260,7 +282,7 @@ func (r *Reconciler) doReconcile(ctx context.Context, pipeline *telemetryv1beta1
 	}
 
 	if len(reconcilablePipelinesRequiringAgents) > 0 {
-		if err := r.reconcileLogAgent(ctx, pipeline, reconcilablePipelinesRequiringAgents); err != nil {
+		if err := r.reconcileAgent(ctx, pipeline, reconcilablePipelinesRequiringAgents); err != nil {
 			return fmt.Errorf("failed to reconcile log agent: %w", err)
 		}
 	}
@@ -369,11 +391,11 @@ func (r *Reconciler) reconcileGateway(ctx context.Context, pipeline *telemetryv1
 			return fmt.Errorf("failed to delete legacy gateway resources: %w", err)
 		}
 
-		if err = r.otlpGatewayApplierDeleter.ApplyResources(ctx, k8sutils.NewOwnerReferenceSetter(r.Client, pipeline), opts); err != nil {
+		if err = r.otlpGatewayApplierDeleter.ApplyResources(ctx, k8sclients.NewOwnerReferenceSetter(r.Client, pipeline), opts); err != nil {
 			return fmt.Errorf("failed to apply OTLP gateway resources: %w", err)
 		}
 	} else {
-		if err = r.gatewayApplierDeleter.ApplyResources(ctx, k8sutils.NewOwnerReferenceSetter(r.Client, pipeline), opts); err != nil {
+		if err = r.gatewayApplierDeleter.ApplyResources(ctx, k8sclients.NewOwnerReferenceSetter(r.Client, pipeline), opts); err != nil {
 			return fmt.Errorf("failed to apply gateway resources: %w", err)
 		}
 	}
@@ -381,7 +403,7 @@ func (r *Reconciler) reconcileGateway(ctx context.Context, pipeline *telemetryv1
 	return nil
 }
 
-func (r *Reconciler) reconcileLogAgent(ctx context.Context, pipeline *telemetryv1beta1.LogPipeline, allPipelines []telemetryv1beta1.LogPipeline) error {
+func (r *Reconciler) reconcileAgent(ctx context.Context, pipeline *telemetryv1beta1.LogPipeline, allPipelines []telemetryv1beta1.LogPipeline) error {
 	var enrichments *operatorv1beta1.EnrichmentSpec
 
 	t, err := telemetryutils.GetDefaultTelemetryInstance(ctx, r.Client, r.globals.DefaultTelemetryNamespace())
@@ -403,6 +425,13 @@ func (r *Reconciler) reconcileLogAgent(ctx context.Context, pipeline *telemetryv
 		return fmt.Errorf("failed to get kube-system namespace for cluster UID: %w", err)
 	}
 
+	vpaCRDExists, err := r.vpaStatusChecker.VpaCRDExists(ctx, r.Client)
+	if err != nil {
+		return fmt.Errorf("failed to check VPA status: %w", err)
+	}
+
+	isVpaEnabled := telemetryutils.IsVpaEnabledInTelemetry(ctx, r.Client, r.globals.DefaultTelemetryNamespace())
+
 	agentConfig, envVars, err := r.agentConfigBuilder.Build(ctx, allPipelines, logagent.BuildOptions{
 		InstrumentationScopeVersion: r.globals.Version(),
 		AgentNamespace:              r.globals.TargetNamespace(),
@@ -413,6 +442,7 @@ func (r *Reconciler) reconcileLogAgent(ctx context.Context, pipeline *telemetryv
 		},
 		Enrichments:       enrichments,
 		ServiceEnrichment: telemetryutils.GetServiceEnrichmentFromTelemetryOrDefault(ctx, telemetryOptions),
+		VpaActive:         vpaCRDExists && isVpaEnabled,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to build agent config: %w", err)
@@ -428,11 +458,16 @@ func (r *Reconciler) reconcileLogAgent(ctx context.Context, pipeline *telemetryv
 		return fmt.Errorf("failed to check Istio status: %w", err)
 	}
 
+	vpaMaxAllowedMemory := r.nodeSizeTracker.VPAMaxAllowedMemory()
+
 	if err := r.agentApplierDeleter.ApplyResources(
 		ctx,
-		k8sutils.NewOwnerReferenceSetter(r.Client, pipeline),
+		k8sclients.NewOwnerReferenceSetter(r.Client, pipeline),
 		otelcollector.AgentApplyOptions{
 			IstioEnabled:        isIstioActive,
+			VpaCRDExists:        vpaCRDExists,
+			VpaEnabled:          isVpaEnabled,
+			VPAMaxAllowedMemory: vpaMaxAllowedMemory,
 			CollectorConfigYAML: string(agentConfigYAML),
 			CollectorEnvVars:    envVars,
 		},

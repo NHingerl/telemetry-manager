@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,6 +14,126 @@ import (
 	"github.com/kyma-project/telemetry-manager/internal/otelcollector/config/common"
 	commonresources "github.com/kyma-project/telemetry-manager/internal/resources/common"
 )
+
+func TestResolveMetricCollectionIntervals(t *testing.T) {
+	tests := []struct {
+		name     string
+		spec     *operatorv1beta1.MetricSpec
+		expected MetricCollectionIntervals
+	}{
+		{
+			name: "nil metric spec returns defaults",
+			spec: nil,
+			expected: MetricCollectionIntervals{
+				Runtime:    30 * time.Second,
+				Prometheus: 30 * time.Second,
+				Istio:      30 * time.Second,
+			},
+		},
+		{
+			name: "empty metric spec returns defaults",
+			spec: &operatorv1beta1.MetricSpec{},
+			expected: MetricCollectionIntervals{
+				Runtime:    30 * time.Second,
+				Prometheus: 30 * time.Second,
+				Istio:      30 * time.Second,
+			},
+		},
+		{
+			name: "global collection interval applies to all inputs",
+			spec: &operatorv1beta1.MetricSpec{
+				CollectionInterval: &metav1.Duration{Duration: 1 * time.Minute},
+			},
+			expected: MetricCollectionIntervals{
+				Runtime:    1 * time.Minute,
+				Prometheus: 1 * time.Minute,
+				Istio:      1 * time.Minute,
+			},
+		},
+		{
+			name: "runtime override takes precedence over global",
+			spec: &operatorv1beta1.MetricSpec{
+				CollectionInterval: &metav1.Duration{Duration: 1 * time.Minute},
+				Runtime:            &operatorv1beta1.MetricInputSpec{CollectionInterval: &metav1.Duration{Duration: 10 * time.Second}},
+			},
+			expected: MetricCollectionIntervals{
+				Runtime:    10 * time.Second,
+				Prometheus: 1 * time.Minute,
+				Istio:      1 * time.Minute,
+			},
+		},
+		{
+			name: "prometheus override takes precedence over global",
+			spec: &operatorv1beta1.MetricSpec{
+				CollectionInterval: &metav1.Duration{Duration: 1 * time.Minute},
+				Prometheus:         &operatorv1beta1.MetricInputSpec{CollectionInterval: &metav1.Duration{Duration: 15 * time.Second}},
+			},
+			expected: MetricCollectionIntervals{
+				Runtime:    1 * time.Minute,
+				Prometheus: 15 * time.Second,
+				Istio:      1 * time.Minute,
+			},
+		},
+		{
+			name: "istio override takes precedence over global",
+			spec: &operatorv1beta1.MetricSpec{
+				CollectionInterval: &metav1.Duration{Duration: 1 * time.Minute},
+				Istio:              &operatorv1beta1.MetricInputSpec{CollectionInterval: &metav1.Duration{Duration: 45 * time.Second}},
+			},
+			expected: MetricCollectionIntervals{
+				Runtime:    1 * time.Minute,
+				Prometheus: 1 * time.Minute,
+				Istio:      45 * time.Second,
+			},
+		},
+		{
+			name: "all input overrides take precedence over global",
+			spec: &operatorv1beta1.MetricSpec{
+				CollectionInterval: &metav1.Duration{Duration: 1 * time.Minute},
+				Runtime:            &operatorv1beta1.MetricInputSpec{CollectionInterval: &metav1.Duration{Duration: 10 * time.Second}},
+				Prometheus:         &operatorv1beta1.MetricInputSpec{CollectionInterval: &metav1.Duration{Duration: 20 * time.Second}},
+				Istio:              &operatorv1beta1.MetricInputSpec{CollectionInterval: &metav1.Duration{Duration: 40 * time.Second}},
+			},
+			expected: MetricCollectionIntervals{
+				Runtime:    10 * time.Second,
+				Prometheus: 20 * time.Second,
+				Istio:      40 * time.Second,
+			},
+		},
+		{
+			name: "input overrides without global use default as base",
+			spec: &operatorv1beta1.MetricSpec{
+				Runtime: &operatorv1beta1.MetricInputSpec{CollectionInterval: &metav1.Duration{Duration: 5 * time.Second}},
+			},
+			expected: MetricCollectionIntervals{
+				Runtime:    5 * time.Second,
+				Prometheus: 30 * time.Second,
+				Istio:      30 * time.Second,
+			},
+		},
+		{
+			name: "input spec present but collection interval nil uses global",
+			spec: &operatorv1beta1.MetricSpec{
+				CollectionInterval: &metav1.Duration{Duration: 2 * time.Minute},
+				Runtime:            &operatorv1beta1.MetricInputSpec{},
+				Prometheus:         &operatorv1beta1.MetricInputSpec{},
+				Istio:              &operatorv1beta1.MetricInputSpec{},
+			},
+			expected: MetricCollectionIntervals{
+				Runtime:    2 * time.Minute,
+				Prometheus: 2 * time.Minute,
+				Istio:      2 * time.Minute,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ResolveMetricCollectionIntervals(tt.spec)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
 
 func TestDefaultTelemetryInstanceFound(t *testing.T) {
 	ctx := t.Context()
@@ -428,6 +549,103 @@ func TestGetServiceEnrichmentFromTelemetryOrDefault(t *testing.T) {
 
 			result := GetServiceEnrichmentFromTelemetryOrDefault(ctx, opts)
 			assert.Equal(t, tt.expectedResult, result)
+		})
+	}
+}
+
+func TestIsVpaEnabledInTelemetry(t *testing.T) {
+	const testNamespace = "kyma-system"
+
+	scheme := runtime.NewScheme()
+	_ = operatorv1beta1.AddToScheme(scheme)
+
+	tests := []struct {
+		name      string
+		telemetry *operatorv1beta1.Telemetry
+		expected  bool
+	}{
+		{
+			name:      "telemetry not found returns false",
+			telemetry: nil,
+			expected:  false,
+		},
+		{
+			name: "annotations nil returns false",
+			telemetry: &operatorv1beta1.Telemetry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default",
+					Namespace: testNamespace,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "annotation key not present returns false",
+			telemetry: &operatorv1beta1.Telemetry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default",
+					Namespace: testNamespace,
+					Annotations: map[string]string{
+						"other-annotation": "some-value",
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "annotation value true returns true",
+			telemetry: &operatorv1beta1.Telemetry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default",
+					Namespace: testNamespace,
+					Annotations: map[string]string{
+						"telemetry.kyma-project.io/enable-vpa": "true",
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "annotation value false returns false",
+			telemetry: &operatorv1beta1.Telemetry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default",
+					Namespace: testNamespace,
+					Annotations: map[string]string{
+						"telemetry.kyma-project.io/enable-vpa": "false",
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "annotation value invalid returns false",
+			telemetry: &operatorv1beta1.Telemetry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default",
+					Namespace: testNamespace,
+					Annotations: map[string]string{
+						"telemetry.kyma-project.io/enable-vpa": "invalid",
+					},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+
+			clientBuilder := fake.NewClientBuilder().WithScheme(scheme)
+			if tt.telemetry != nil {
+				clientBuilder = clientBuilder.WithObjects(tt.telemetry)
+			}
+
+			fakeClient := clientBuilder.Build()
+
+			result := IsVpaEnabledInTelemetry(ctx, fakeClient, testNamespace)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
